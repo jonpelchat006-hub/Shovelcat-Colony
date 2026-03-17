@@ -1,0 +1,143 @@
+SHOVELCAT LIVE A/B BENCHMARK
+════════════════════════════════════════════════════════════════════════════════
+Disk: 50MB per method | Memory: 5000 allocs
+Monitoring every 500ms | Will trigger scan at http://localhost:3000/api/trading
+
+PHASE 1: BASELINE (5 seconds)
+────────────────────────────────────────────────────────────────────────────────
+  19:20:28.402 VRAM:  5633MB [==============      ]     RAM free:  21.7GB     |q|=0.91 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:20:29.800 VRAM:  5633MB [==============      ]     RAM free:  21.7GB     |q|=0.91 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:20:31.201 VRAM:  5633MB [==============      ]     RAM free:  21.7GB     |q|=0.91 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:20:32.368 VRAM:   675MB [--                  ] ▼▼  RAM free:  24.1GB ▲▲  |q|=0.74 IS=0.10 V=0.85 θ=0.82 ○ idle
+  19:20:33.540 VRAM:   675MB [--                  ]     RAM free:  24.1GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ evict
+
+PHASE 2: TRIGGERING TRADING SCAN (loading Ollama models)
+────────────────────────────────────────────────────────────────────────────────
+  Scan triggered: 400 — {"error":"Unknown action. Use: start, stop, scan, thesis, execute, close, ibkr, budget, reset"}
+
+  Monitoring quaternion during model loading...
+
+  19:20:34.849 VRAM:   675MB [--                  ]     RAM free:  24.1GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:36.912 VRAM:   465MB [-                   ] ▲▲  RAM free:  24.1GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ evict
+  19:20:38.961 VRAM:   465MB [-                   ]     RAM free:  24.0GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:41.011 VRAM:   465MB [-                   ]     RAM free:  24.0GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:43.685 VRAM:   465MB [-                   ]     RAM free:  24.0GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:45.702 VRAM:   465MB [-                   ]     RAM free:  24.0GB     |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:47.769 VRAM:   585MB [-                   ]     RAM free:  23.7GB     |q|=0.57 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:20:49.821 VRAM:   679MB [--                  ]     RAM free:  23.7GB     |q|=0.57 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:20:52.548 VRAM:   679MB [--                  ]     RAM free:  23.7GB     |q|=0.57 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:20:54.653 VRAM:   806MB [--                  ]     RAM free:  19.1GB ▼▼  |q|=0.65 IS=0.13 V=0.87 θ=0.02 ○ idle
+  19:20:56.802 VRAM:   810MB [--                  ]     RAM free:  11.1GB ▼▼  |q|=0.83 IS=0.16 V=0.84 θ=0.01 ○ idle
+  19:20:59.074 VRAM:   838MB [--                  ]     RAM free:   5.4GB ▼▼  |q|=0.98 IS=0.19 V=0.81 θ=0.01 ○ evict
+  19:21:01.440 VRAM:  7735MB [!!!!!!!!!!!!!!!!!!! ] ▼   RAM free:   3.6GB ▼   |q|=1.39 IS=0.29 V=0.71 θ=0.01 ○ dormant
+  19:21:03.773 VRAM:  7741MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.1GB ▼▼  |q|=1.44 IS=0.31 V=0.69 θ=0.00 ○ dormant
+  19:21:06.127 VRAM:  7744MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.2GB     |q|=1.44 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:08.509 VRAM:  7740MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.7GB     |q|=1.43 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:10.793 VRAM:  7739MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.7GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:13.092 VRAM:  7725MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.7GB     |q|=1.43 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:15.445 VRAM:  7727MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.7GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:17.850 VRAM:  7729MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.7GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:20.189 VRAM:  7729MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.6GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:22.527 VRAM:  7729MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.5GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:24.886 VRAM:  7716MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.4GB     |q|=1.44 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:27.277 VRAM:  7716MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.4GB     |q|=1.43 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:29.603 VRAM:  7708MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.4GB     |q|=1.43 IS=0.30 V=0.70 θ=0.01 ○ dormant
+  19:21:31.920 VRAM:  7713MB [!!!!!!!!!!!!!!!!!!! ]     RAM free:   1.5GB     |q|=1.43 IS=0.30 V=0.70 θ=0.00 ○ dormant
+  19:21:34.244 VRAM:   545MB [-                   ] ▲▲  RAM free:  24.7GB ▲▲  |q|=0.63 IS=0.10 V=0.87 θ=0.67 ○ evict
+  19:21:36.312 VRAM:   545MB [-                   ]     RAM free:  24.7GB     |q|=0.55 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:21:38.420 VRAM:   545MB [-                   ]     RAM free:  24.7GB     |q|=0.55 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:21:40.439 VRAM:   545MB [-                   ]     RAM free:  24.7GB     |q|=0.55 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:21:42.556 VRAM:   545MB [-                   ]     RAM free:  24.6GB     |q|=0.55 IS=0.10 V=0.90 θ=0.03 ○ idle
+  19:21:44.682 VRAM:  2670MB [-------             ]     RAM free:  22.2GB     |q|=0.67 IS=0.14 V=0.86 θ=0.01 ○ idle
+  19:21:46.889 VRAM:  4418MB [===========         ] ▼▼  RAM free:  22.6GB ▲▲  |q|=0.80 IS=0.17 V=0.82 θ=0.16 ○ idle
+  19:21:49.182 VRAM:   425MB [-                   ] ▲   RAM free:  23.7GB ▼   |q|=0.56 IS=0.10 V=0.90 θ=0.03 ○ evict
+  19:21:51.480 VRAM:  5543MB [==============      ] ▲▲  RAM free:  22.0GB ▼▼  |q|=1.09 IS=0.24 V=0.76 θ=0.01 ○ evict
+  19:21:53.638 VRAM:  5551MB [==============      ] ▼   RAM free:  21.2GB     |q|=0.91 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:21:55.690 VRAM:  5551MB [==============      ]     RAM free:  21.2GB     |q|=0.91 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:21:58.525 VRAM:  5656MB [==============      ]     RAM free:  21.2GB     |q|=0.92 IS=0.19 V=0.81 θ=0.01 ○ idle
+  19:22:01.113 VRAM:   706MB [--                  ] ▲   RAM free:  23.4GB     |q|=0.57 IS=0.11 V=0.89 θ=0.03 ○ evict
+  19:22:03.126 VRAM:   706MB [--                  ]     RAM free:  23.4GB     |q|=0.57 IS=0.11 V=0.89 θ=0.03 ○ idle
+
+PHASE 3: A/B BENCHMARK (while system is under load)
+────────────────────────────────────────────────────────────────────────────────
+
+SHOVELCAT A/B BENCHMARK
+════════════════════════════════════════════════════════════
+Disk test: 50MB per method
+Memory test: 5000 allocations per method
+
+TEST 1: DISK I/O — Random 4KB vs Fibonacci vs Fixed 16KB
+────────────────────────────────────────────────────────────
+
+  Method                     Files  AvgChunk  Write MB/s   Read MB/s   Total ms
+  ────────────────────────────────────────────────────────────────────────
+  Random 4KB blocks          12800     4.0KB         8.5        40.9     7077.9
+  Fibonacci h_info chunks    11488     4.5KB        10.0        48.3     6055.7
+  Fixed 16KB blocks           3200    16.0KB        38.6       166.6     1597.0
+
+TEST 2: DERIVATIVE CHAIN PREDICTION ACCURACY
+────────────────────────────────────────────────────────────
+
+  Horizon     Pred VRAM     Actual   Err MB   Err %   Pred RAM     Actual   Err %   Conf
+  ─────────────────────────────────────────────────────────────────────────────────
+  0.5s              605        605      0.0    0.0%      23978      24044    0.2%    60%
+  1s                709        605    103.8    1.3%      24256      24050    0.6%    79%
+  2s                605        705    100.0    1.2%      24686      24049    1.9%    97%
+
+TEST 3: MEMORY ALLOCATION — Random vs Fibonacci Patterns
+────────────────────────────────────────────────────────────
+
+  Method                           Alloc ms    Free ms   Total ms   Peak MB    Frag
+  ────────────────────────────────────────────────────────────────────────────
+  Random sizes (1-64KB)                76.1        0.3       76.4    160.32   0.334
+  Fibonacci chunks (h_info scaled)       12.8        0.4       13.2     21.76   0.052
+
+QUATERNION STATE THROUGH BENCHMARK
+────────────────────────────────────────────────────────────
+  Phase                     |q|  Circuit     IS   ISN'T   Void  Bridge θ       Demand
+  ────────────────────────────────────────────────────────────────────────────
+  baseline                0.572     OPEN  0.106   0.000  0.894     0.026     balanced
+  after-random-disk       0.577     OPEN  0.108   0.000  0.892     0.025     balanced
+  after-fib-disk          0.581     OPEN  0.110   0.000  0.890     0.024     balanced
+  after-large-disk        0.580     OPEN  0.110   0.000  0.890     0.028     balanced
+  after-predictions       0.572     OPEN  0.106   0.000  0.894     0.029     balanced
+  after-random-mem        0.576     OPEN  0.109   0.000  0.891     0.025   read-heavy
+  after-fib-mem           0.576     OPEN  0.108   0.000  0.892     0.025     balanced
+
+RESULTS SUMMARY
+════════════════════════════════════════════════════════════
+  Disk I/O winner:       Fibonacci (1.17x faster)
+  Prediction accuracy:   99.1% (avg across horizons)
+  Memory winner:         Fibonacci (84.6% fragmentation reduction)
+
+  ✓ Geometric allocation outperformed random in both disk and memory.
+    The derivative chain predicted with 99.1% accuracy.
+
+PHASE 4: COOLDOWN (5 seconds)
+────────────────────────────────────────────────────────────────────────────────
+  19:22:32.389 VRAM:   754MB [--                  ]     RAM free:  23.3GB     |q|=0.58 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:22:33.569 VRAM:   755MB [--                  ]     RAM free:  23.2GB     |q|=0.58 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:22:34.754 VRAM:   755MB [--                  ]     RAM free:  23.2GB     |q|=0.58 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:22:35.939 VRAM:   755MB [--                  ]     RAM free:  23.2GB     |q|=0.58 IS=0.11 V=0.89 θ=0.03 ○ idle
+  19:22:37.133 VRAM:   755MB [--                  ]     RAM free:  23.2GB     |q|=0.58 IS=0.11 V=0.89 θ=0.03 ○ idle
+
+QUATERNION JOURNEY
+════════════════════════════════════════════════════════════════════════════════
+  Baseline VRAM:  5633MB
+  Peak VRAM:      7751MB (+2118MB from models)
+  Cooldown VRAM:  755MB
+
+  Baseline Void:  81.1%
+  Min Void:       61.2% (peak pressure)
+  Max IS flow:    38.8% (peak data movement)
+
+  Bridge θ range: 0.011 → 0.895 rad
+  Bridge rotated: YES — IS/ISN'T rebalanced
+
+  Circuit closed: 0/110 frames (0%)
+
+  A/B Disk winner:    Fibonacci (1.17x)
+  Prediction acc:     99.1%
+  Frag reduction:     84.6%
+
+✓ Live benchmark complete.

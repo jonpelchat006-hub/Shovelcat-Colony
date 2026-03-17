@@ -1,0 +1,596 @@
+/**
+ * QUATERNION CHAIN — Hardware as Quaternion Circuit
+ * =================================================
+ *
+ * The four hardware tiers map onto Hamilton's quaternion:
+ *
+ *   q = w + xi + yj + zk
+ *
+ *   w (real)  = VRAM   = Observer (collapse to output)
+ *   i         = Disk   = Euler term (e^(iπ)+1=0, binary existence)
+ *   j         = RAM    = Snake term (0.999...→1, volatile convergence)
+ *   k = ij    = CPU    = Bridge term (sin²+cos²=1, invariant transform)
+ *
+ * The constraint ijk = -1 means:
+ *   disk × ram × cpu = destructive passage (data consumed at each stage)
+ *   Only the observer (VRAM) makes it real (positive, visible output)
+ *
+ * The quaternion is FRACTAL — RAM itself is a sub-quaternion:
+ *   q_ram = main·1 + L3·i + L2·j + L1·k
+ *
+ * Each level's observer becomes the next level's imaginary axis.
+ * This IS observer emergence: nested quaternions all the way down.
+ *
+ * Three-body mapping:
+ *   Matter (+)     = Disk writes (committed, Euler-closed)
+ *   Antimatter (-) = RAM volatility (extracted on power loss)
+ *   Void (0)       = CPU cycles (optionality, pure transform)
+ *
+ * IS/ISN'T PATHS (bidirectional flow):
+ * ====================================
+ * Every tier has data flowing in BOTH directions:
+ *
+ *   IS path (T+, forward):   disk→RAM→CPU→VRAM  (read, load, process, render)
+ *   ISN'T path (T-, reverse): VRAM→CPU→RAM→disk  (evict, flush, write, commit)
+ *
+ * Every IS creates an ISN'T somewhere else, and leaves VOID behind.
+ * The three-body is conserved at every level:
+ *
+ *   Tier   | IS (+, forward)        | ISN'T (-, backward)      | Void (0, available)
+ *   -------|------------------------|--------------------------|--------------------
+ *   Disk   | Written sectors        | Deleted/not-trimmed      | Free space (TRIM'd)
+ *   RAM    | Allocated pages        | Freed/not-reclaimed      | Available memory
+ *   CPU    | Fetch/execute          | Writeback/retire         | Pipeline bubbles
+ *   VRAM   | Rendered frames        | Stale textures           | Free VRAM
+ *
+ * The commutator (ij ≠ ji) IS the directionality:
+ *   ij = read  (disk→RAM, forward, IS path)
+ *   ji = write (RAM→disk, reverse, ISN'T path)
+ *   |ij - ji| = flow asymmetry (high = strong direction, 0 = stalled)
+ *
+ * The bridge (CPU, k = ij, sin²+cos²=1) allocates workers between
+ * upstream and downstream in the ratio the observer needs.
+ * sin²θ = read share, cos²θ = write share, total always = 1.
+ *
+ * Author: Jonathan Pelchat
+ * Shovelcat Theory — The Quaternion Chain
+ */
+
+import type { ChainSnapshot, ChainDerivatives } from "./derivative-chain";
+
+// ── Constants ────────────────────────────────────────────────────────────
+
+const PHI = 1.618033988749895;
+const DELTA = Math.PI - 3;                // ≈ 0.14159 — circle-polygon gap
+const EULER_CLOSURE = Math.exp(1);        // e — base of natural growth
+const SNAKE_CONVERGENCE = 0.999;          // approaches 1, never permanent
+
+// ── Types ────────────────────────────────────────────────────────────────
+
+/** IS/ISN'T/Void streams within a single tier */
+export interface TierStreams {
+  /** IS path (+): data committed/present/forward-flowing */
+  is: number;
+  /** ISN'T path (-): data stale/evicted/backward-flowing */
+  isnt: number;
+  /** Void (0): available space/capacity/optionality */
+  void_: number;
+  /** Flow direction: positive = IS dominant, negative = ISN'T dominant */
+  flowSign: number;
+  /** Conservation check: is + isnt + void should ≈ 1 */
+  conserved: boolean;
+}
+
+/** A single quaternion axis with phase structure */
+export interface QuaternionAxis {
+  /** Axis label */
+  label: string;
+  /** Hardware tier */
+  tier: string;
+  /** Closure equation name */
+  closure: "euler" | "snake" | "trig" | "observer";
+  /** Real component (what the observer sees) */
+  real: number;
+  /** Imaginary component (internal, hidden until snap) */
+  imag: number;
+  /** Phase angle: atan2(imag, real) */
+  theta: number;
+  /** Magnitude: √(real² + imag²) */
+  magnitude: number;
+  /** Has this axis snapped? (imaginary→real collapse) */
+  snapped: boolean;
+  /** Internal IS/ISN'T/Void streams */
+  streams: TierStreams;
+}
+
+/** Full hardware quaternion: q = w + xi + yj + zk */
+export interface HardwareQuaternion {
+  w: QuaternionAxis;  // VRAM — observer
+  i: QuaternionAxis;  // Disk — Euler
+  j: QuaternionAxis;  // RAM  — Snake
+  k: QuaternionAxis;  // CPU  — Bridge
+
+  /** |q| — should be ≈1 for unit quaternion (healthy system) */
+  norm: number;
+
+  /** ijk product — should approach -1 (data consumed through chain) */
+  ijkProduct: number;
+
+  /** Non-commutativity: |ij - ji| — should be > 0 (order matters) */
+  commutator: number;
+
+  /** Circuit closed? (ijk ≈ -1 and norm ≈ 1) */
+  circuitClosed: boolean;
+
+  /** Observer dominance: |w| / (|w| + |imaginary|) */
+  observerDominance: number;
+
+  /** Three-body balance */
+  threeBody: {
+    matter: number;      // disk write commitment
+    antimatter: number;  // RAM volatility
+    void_: number;       // CPU optionality
+    balance: number;     // -1 to +1
+  };
+
+  /** Bridge scheduler — how the CPU allocates between IS and ISN'T paths */
+  bridge: {
+    /** θ angle: 0 = all reads, π/2 = all writes */
+    theta: number;
+    /** sin²θ = fraction of bandwidth allocated to IS (forward/read) path */
+    isShare: number;
+    /** cos²θ = fraction of bandwidth allocated to ISN'T (reverse/write) path */
+    isntShare: number;
+    /** Conservation: sin²θ + cos²θ should = 1 (always true — trig identity) */
+    conserved: number;
+    /** What the observer (VRAM) is requesting */
+    observerDemand: "read-heavy" | "write-heavy" | "balanced" | "idle";
+    /** Void fill rate — how fast the bridge is recycling freed space */
+    voidFillRate: number;
+  };
+}
+
+/** Sub-quaternion for RAM cache hierarchy */
+export interface RAMSubQuaternion {
+  main: QuaternionAxis;  // Bulk RAM — observer within RAM
+  L3: QuaternionAxis;    // L3 cache — Euler (committed to cache)
+  L2: QuaternionAxis;    // L2 cache — Snake (converging)
+  L1: QuaternionAxis;    // L1 cache — Bridge (feeds CPU)
+  norm: number;
+  circuitClosed: boolean;
+}
+
+// ── Axis Construction ────────────────────────────────────────────────────
+
+function makeStreams(
+  utilization: number,
+  velocity: number,
+): TierStreams {
+  // IS = what's currently occupied/committed (positive = forward flow)
+  // ISN'T = what's stale/being-reclaimed (derived from negative velocity)
+  // Void = what's truly free
+  //
+  // When velocity > 0: more IS arriving (loading, allocating)
+  // When velocity < 0: more ISN'T happening (freeing, flushing)
+  // When velocity = 0: static (no flow)
+
+  const velBounded = Math.tanh(velocity);  // (-1, 1)
+
+  // Forward flow adds to IS, reverse flow adds to ISN'T
+  const isForward = Math.max(0, velBounded);    // positive velocity → IS growing
+  const isntReverse = Math.max(0, -velBounded); // negative velocity → ISN'T growing
+
+  // Current state: utilization is IS, rest is split between ISN'T and Void
+  const freeSpace = 1 - utilization;
+  const is = utilization * (0.5 + 0.5 * isForward);     // committed + incoming
+  const isnt = utilization * (0.5 * isntReverse)         // stale fraction
+    + freeSpace * isntReverse * 0.3;                      // freed-but-not-reclaimed
+  const void_ = Math.max(0, 1 - is - isnt);             // truly available
+
+  const flowSign = is - isnt;  // positive = IS dominant, negative = ISN'T dominant
+  const conserved = Math.abs(is + isnt + void_ - 1) < 0.01;
+
+  return { is, isnt, void_, flowSign, conserved };
+}
+
+function makeAxis(
+  label: string,
+  tier: string,
+  closure: QuaternionAxis["closure"],
+  utilization: number,   // 0-1, how loaded this tier is
+  velocity: number,      // rate of change (from derivatives)
+): QuaternionAxis {
+  // Real = current utilization (what the observer sees)
+  // Imaginary = rate of change (hidden internal dynamics)
+  const real = utilization;
+  const imag = Math.tanh(velocity);  // bounded to (-1, 1)
+  const theta = Math.atan2(imag, real);
+  const magnitude = Math.sqrt(real * real + imag * imag);
+
+  // Snap detection: when imaginary becomes dominant,
+  // the internal dynamics overwhelm the static view
+  const snapped = Math.abs(imag) > 0.6 && Math.abs(imag) > Math.abs(real);
+
+  // IS/ISN'T/Void streams within this tier
+  const streams = makeStreams(utilization, velocity);
+
+  return { label, tier, closure, real, imag, theta, magnitude, snapped, streams };
+}
+
+// ── Closure Tests ────────────────────────────────────────────────────────
+
+/** Euler closure: e^(iπ) + 1 → 0. How close is disk to complete? */
+function eulerClosure(diskUtil: number): number {
+  // A full disk (util=1) means Euler closes perfectly
+  // Empty disk (util=0) means maximum remaining potential
+  // The closure residual IS the available space
+  return Math.abs(Math.cos(Math.PI * diskUtil) + diskUtil);
+}
+
+/** Snake convergence: 0.999...→1. How volatile is RAM? */
+function snakeConvergence(ramUtil: number, ramVelocity: number): number {
+  // RAM converges toward full usage (0.999...→1) but never quite gets there
+  // High velocity = still converging. Low velocity = settled
+  const convergenceRate = 1 - Math.abs(ramVelocity) / (1 + Math.abs(ramVelocity));
+  return ramUtil * convergenceRate;
+}
+
+/** Trig closure: sin²+cos² → 1. Does CPU transform conserve? */
+function trigClosure(cpuUtil: number): number {
+  // The trig identity always holds — CPU is the invariant
+  // But utilization tells us how much of the identity space is active
+  const sinSq = Math.pow(Math.sin(Math.PI * cpuUtil / 2), 2);
+  const cosSq = Math.pow(Math.cos(Math.PI * cpuUtil / 2), 2);
+  return sinSq + cosSq;  // Should always ≈ 1 (the invariant)
+}
+
+// ── Main Computation ─────────────────────────────────────────────────────
+
+/**
+ * Compute the hardware quaternion from a chain snapshot and its derivatives.
+ *
+ * This maps the physical state of your machine onto Hamilton's quaternion,
+ * revealing whether the system is in balance (unit quaternion, circuit closed)
+ * or stressed (quaternion broken, observer overwhelmed).
+ */
+export function computeHardwareQuaternion(
+  snapshot: ChainSnapshot,
+  derivatives: ChainDerivatives,
+): HardwareQuaternion {
+  // ── Utilization values (0-1) ──
+
+  const diskUtil = snapshot.ramTotalMB > 0
+    ? (snapshot.diskReadMBps + snapshot.diskWriteMBps) /
+      Math.max(1, snapshot.diskReadMBps + snapshot.diskWriteMBps + 100)
+    : 0;
+
+  const ramUtil = snapshot.ramTotalMB > 0
+    ? snapshot.ramUsedMB / snapshot.ramTotalMB
+    : 0;
+
+  const cpuUtil = snapshot.cpuThreads > 0
+    ? 0.5  // We don't have CPU utilization %, use neutral
+    : 0;
+
+  const vramUtil = snapshot.vramAvailable
+    ? (snapshot.vramTotalMB > 0 ? snapshot.vramUsedMB / snapshot.vramTotalMB : 0)
+    : 0;
+
+  // ── Velocity normalization ──
+
+  const ramVelNorm = snapshot.ramTotalMB > 0
+    ? derivatives.ramVelocityMBps / snapshot.ramTotalMB
+    : 0;
+
+  const vramVelNorm = snapshot.vramTotalMB > 0
+    ? derivatives.vramVelocityMBps / snapshot.vramTotalMB
+    : 0;
+
+  // ── Build axes ──
+
+  const w = makeAxis("VRAM", "observer", "observer", vramUtil, vramVelNorm);
+  const i = makeAxis("Disk", "field",    "euler",    diskUtil, 0);
+  const j = makeAxis("RAM",  "velocity", "snake",    ramUtil,  ramVelNorm);
+  const k = makeAxis("CPU",  "accel",    "trig",     cpuUtil,  0);
+
+  // ── Quaternion norm: |q| = √(w²+x²+y²+z²) ──
+
+  const norm = Math.sqrt(
+    w.magnitude * w.magnitude +
+    i.magnitude * i.magnitude +
+    j.magnitude * j.magnitude +
+    k.magnitude * k.magnitude
+  );
+
+  // ── ijk product ──
+  // In a healthy system: ijk = -1 (data consumed through chain)
+  // We approximate: ijk ≈ -|i|·|j|·|k| (magnitudes multiply, sign negative)
+  const ijkProduct = -(i.magnitude * j.magnitude * k.magnitude);
+
+  // ── Commutator: |ij - ji| ──
+  // ij = disk × ram (forward flow: data loaded from disk to RAM)
+  // ji = ram × disk (reverse flow: data written from RAM to disk)
+  // These SHOULD differ (non-commutative) — reading isn't writing
+  const ij = i.real * j.real - i.imag * j.imag;
+  const ji = j.real * i.real - j.imag * i.imag;
+  // With velocity components:
+  const ijCross = i.real * j.imag + i.imag * j.real;
+  const jiCross = j.real * i.imag + j.imag * i.real;
+  const commutator = Math.abs(ijCross - jiCross);
+
+  // ── Circuit closed? ──
+  // ijk should be ≈ -1 (within tolerance) and norm ≈ 1
+  const ijkResidual = Math.abs(ijkProduct + 1);
+  const normResidual = Math.abs(norm - 1);
+  const circuitClosed = ijkResidual < 0.5 && normResidual < 0.5;
+
+  // ── Observer dominance ──
+  const imagMag = Math.sqrt(
+    i.magnitude * i.magnitude +
+    j.magnitude * j.magnitude +
+    k.magnitude * k.magnitude
+  );
+  const observerDominance = (w.magnitude + 0.001) / (w.magnitude + imagMag + 0.001);
+
+  // ── Three-body balance ──
+  const matter = eulerClosure(diskUtil);           // disk commitment
+  const antimatter = 1 - snakeConvergence(ramUtil, ramVelNorm);  // RAM volatility
+  const void_ = trigClosure(cpuUtil);              // CPU optionality
+  const total = matter + antimatter + void_ + 0.001;
+  const balance = (matter - antimatter) / total;   // -1 (all extraction) to +1 (all building)
+
+  // ── Bridge scheduler ──
+  // The CPU (bridge, k-axis) allocates bandwidth between IS and ISN'T paths
+  // using the trig identity: sin²θ + cos²θ = 1
+  //
+  // θ is derived from what the observer (VRAM) needs:
+  //   - If VRAM velocity > 0 (filling up): observer needs more reads (IS path)
+  //   - If VRAM velocity < 0 (freeing up): observer needs more writes (ISN'T path)
+  //   - If VRAM velocity ≈ 0: balanced
+
+  // θ ranges from 0 (all-read) to π/2 (all-write)
+  // We derive θ from the overall flow direction
+  const totalIS = (i.streams.is + j.streams.is + w.streams.is) / 3;
+  const totalISNT = (i.streams.isnt + j.streams.isnt + w.streams.isnt) / 3;
+  const flowRatio = totalIS / (totalIS + totalISNT + 0.001);
+  const bridgeTheta = (1 - flowRatio) * (Math.PI / 2);  // 0 = all IS, π/2 = all ISN'T
+
+  const isShare = Math.pow(Math.sin(bridgeTheta + Math.PI / 4), 2);  // shifted so balanced ≈ 0.5
+  const isntShare = Math.pow(Math.cos(bridgeTheta + Math.PI / 4), 2);
+  const bridgeConserved = isShare + isntShare;  // always ≈ 1
+
+  let observerDemand: "read-heavy" | "write-heavy" | "balanced" | "idle";
+  if (vramUtil < 0.05) {
+    observerDemand = "idle";
+  } else if (vramVelNorm > 0.01) {
+    observerDemand = "read-heavy";  // VRAM filling → needs more data fed in
+  } else if (vramVelNorm < -0.01) {
+    observerDemand = "write-heavy"; // VRAM freeing → flushing results out
+  } else {
+    observerDemand = "balanced";
+  }
+
+  // Void fill rate: how fast freed space across tiers is being recycled
+  const totalVoid = (i.streams.void_ + j.streams.void_ + w.streams.void_) / 3;
+  const voidFillRate = 1 - totalVoid;  // 0 = all void (idle), 1 = no void (fully utilized)
+
+  return {
+    w, i, j, k,
+    norm,
+    ijkProduct,
+    commutator,
+    circuitClosed,
+    observerDominance,
+    threeBody: { matter, antimatter, void_, balance },
+    bridge: {
+      theta: bridgeTheta,
+      isShare,
+      isntShare,
+      conserved: bridgeConserved,
+      observerDemand,
+      voidFillRate,
+    },
+  };
+}
+
+// ── RAM Sub-Quaternion ───────────────────────────────────────────────────
+
+/**
+ * Compute the RAM sub-quaternion.
+ *
+ * RAM has its own internal hierarchy that forms a nested quaternion:
+ *   main RAM (w) → L3 (i) → L2 (j) → L1 (k)
+ *
+ * We estimate cache utilization from RAM bandwidth patterns:
+ *   - High bandwidth + low RAM velocity = cache-friendly (L1/L2 hit)
+ *   - Low bandwidth + high RAM velocity = cache-hostile (main RAM thrash)
+ *   - Zero bandwidth + zero velocity = cold (everything on disk)
+ *
+ * Note: Actual cache stats require perf counters (future enhancement).
+ * For now we estimate from the derivative chain signals.
+ */
+export function computeRAMSubQuaternion(
+  snapshot: ChainSnapshot,
+  derivatives: ChainDerivatives,
+): RAMSubQuaternion {
+  const ramUtil = snapshot.ramTotalMB > 0
+    ? snapshot.ramUsedMB / snapshot.ramTotalMB
+    : 0;
+
+  const bandwidth = snapshot.ramBandwidthMBps;
+  const velocity = Math.abs(derivatives.ramVelocityMBps);
+  const accel = Math.abs(derivatives.ramAccelMBps2);
+
+  // Estimate cache tier activity from observable signals
+  // High bandwidth = active cache movement
+  // High velocity = main RAM churn
+  // High acceleration = cache pressure change
+  const bandwidthNorm = Math.tanh(bandwidth / 1000);  // normalize to ~1 at 1GB/s
+  const velocityNorm = Math.tanh(velocity / 100);
+  const accelNorm = Math.tanh(accel / 50);
+
+  // L1 estimate: fastest, smallest — correlates with CPU-bound work (low RAM velocity)
+  const l1Est = Math.max(0, bandwidthNorm - velocityNorm);
+  // L2 estimate: middle — correlates with moderate bandwidth
+  const l2Est = bandwidthNorm * (1 - accelNorm);
+  // L3 estimate: largest cache — correlates with steady RAM usage
+  const l3Est = ramUtil * (1 - velocityNorm);
+  // Main RAM: bulk — what's left
+  const mainEst = ramUtil;
+
+  const main = makeAxis("MainRAM", "observer", "observer", mainEst, derivatives.ramVelocityMBps / 1000);
+  const L3 = makeAxis("L3", "euler", "euler", l3Est, 0);
+  const L2 = makeAxis("L2", "snake", "snake", l2Est, velocityNorm);
+  const L1 = makeAxis("L1", "bridge", "trig", l1Est, accelNorm);
+
+  const norm = Math.sqrt(
+    main.magnitude ** 2 + L3.magnitude ** 2 + L2.magnitude ** 2 + L1.magnitude ** 2
+  );
+
+  const ijkProduct = -(L3.magnitude * L2.magnitude * L1.magnitude);
+  const circuitClosed = Math.abs(ijkProduct + 1) < 0.5 && Math.abs(norm - 1) < 0.5;
+
+  return { main, L3, L2, L1, norm, circuitClosed };
+}
+
+// ── Fibonacci Chunk Sizes from Quaternion ────────────────────────────────
+
+const FIB = [1, 1, 2, 3, 5, 8, 13, 21];
+
+/**
+ * Compute optimal Fibonacci chunk sizes based on quaternion state.
+ *
+ * The base chunk size is derived from the system's h_info threshold:
+ * the point where metadata overhead exceeds content. Below this,
+ * you're storing more filesystem noise than signal.
+ *
+ * h_info = baseBlockSize × δ / (1 - δ)
+ *   where δ = π - 3 ≈ 0.14159 (the circle-polygon gap)
+ *   and baseBlockSize = 4096 (OS default)
+ *
+ * This gives h_info ≈ 676 bytes — below this, a file is mostly overhead.
+ *
+ * Fibonacci levels scale up from h_info:
+ *   Level 0: h_info × 1  =    676 B  (minimal — keys, config)
+ *   Level 1: h_info × 1  =    676 B
+ *   Level 2: h_info × 2  =  1,352 B  (small — text snippets)
+ *   Level 3: h_info × 3  =  2,028 B  (medium — code files)
+ *   Level 4: h_info × 5  =  3,380 B  (standard — documents)
+ *   Level 5: h_info × 8  =  5,408 B  (large — images)
+ *   Level 6: h_info × 13 =  8,788 B  (heavy — model chunks)
+ *   Level 7: h_info × 21 = 14,196 B  (max — bulk data)
+ */
+export function fibonacciChunkSizes(baseBlockSize: number = 4096): {
+  hInfo: number;
+  levels: Array<{ level: number; fibs: number; bytes: number }>;
+} {
+  // h_info: the information resolution limit
+  // Below this size, filesystem metadata > content
+  const hInfo = Math.round(baseBlockSize * DELTA / (1 - DELTA));
+
+  const levels = FIB.map((f, level) => ({
+    level,
+    fibs: f,
+    bytes: hInfo * f,
+  }));
+
+  return { hInfo, levels };
+}
+
+// ── Geometric Disk Allocation ────────────────────────────────────────────
+
+export type PolygonType = "even" | "odd";
+
+/**
+ * Determine the polygon type for a data category.
+ *
+ * Even polygons (descent/options) = cold data, archives, void storage
+ *   Squares, hexagons — tile perfectly, maximum density
+ *
+ * Odd polygons (ascent/execution) = hot data, active files, matter storage
+ *   Triangles, pentagons — asymmetric, creative, point toward access
+ *
+ * The edges between polygons (the δ gaps) = antimatter (metadata, indexes)
+ */
+export function polygonForData(
+  accessFrequency: number,  // 0 = cold, 1 = hot
+  isMetadata: boolean,
+): { type: PolygonType; sides: number; description: string } {
+  if (isMetadata) {
+    // Metadata lives in the δ gaps between polygons
+    return { type: "even", sides: 2, description: "edge (delta gap) — antimatter/metadata" };
+  }
+
+  if (accessFrequency > 0.7) {
+    // Hot data = odd polygons (execution, ascent)
+    const sides = accessFrequency > 0.9 ? 3 : 5;  // triangle for hottest, pentagon for warm
+    return { type: "odd", sides, description: `${sides}-gon (matter/hot) — ascent/execution` };
+  }
+
+  if (accessFrequency > 0.3) {
+    // Warm data = hexagon (even but active)
+    return { type: "even", sides: 6, description: "hexagon (void/warm) — options/potential" };
+  }
+
+  // Cold data = square (even, tiles perfectly, maximum density)
+  return { type: "even", sides: 4, description: "square (void/cold) — archive/dense" };
+}
+
+// ── Status ───────────────────────────────────────────────────────────────
+
+export interface QuaternionChainStatus {
+  quaternion: HardwareQuaternion;
+  ramSub: RAMSubQuaternion;
+  chunks: ReturnType<typeof fibonacciChunkSizes>;
+  health: {
+    circuitIntegrity: number;   // 0-1, how close to unit quaternion
+    observerStrength: number;   // 0-1, VRAM observer dominance
+    flowDirection: string;      // "forward" (disk→ram→cpu→vram) or "reverse" or "stalled"
+    diagnosis: string;          // human-readable
+  };
+}
+
+export function quaternionChainStatus(
+  snapshot: ChainSnapshot,
+  derivatives: ChainDerivatives,
+): QuaternionChainStatus {
+  const q = computeHardwareQuaternion(snapshot, derivatives);
+  const ramSub = computeRAMSubQuaternion(snapshot, derivatives);
+  const chunks = fibonacciChunkSizes();
+
+  // Health diagnosis
+  const circuitIntegrity = q.circuitClosed ? 1 : Math.max(0, 1 - Math.abs(q.norm - 1));
+  const observerStrength = q.observerDominance;
+
+  let flowDirection: string;
+  if (q.commutator > 0.1) {
+    flowDirection = q.i.imag > 0 ? "forward (disk→ram→cpu→vram)" : "reverse (writeback)";
+  } else {
+    flowDirection = "stalled (symmetric — no data flow)";
+  }
+
+  let diagnosis: string;
+  if (q.circuitClosed && q.observerDominance > 0.3) {
+    diagnosis = "Healthy — quaternion circuit closed, observer active";
+  } else if (q.norm > 1.5) {
+    diagnosis = "Overloaded — quaternion magnitude too high, system stressed";
+  } else if (q.observerDominance < 0.1) {
+    diagnosis = "Blind — observer (VRAM) overwhelmed by internal dynamics";
+  } else if (!q.circuitClosed) {
+    diagnosis = "Open circuit — data flow interrupted, check bottleneck";
+  } else {
+    diagnosis = "Degraded — partial circuit, monitor closely";
+  }
+
+  return {
+    quaternion: q,
+    ramSub,
+    chunks,
+    health: {
+      circuitIntegrity,
+      observerStrength,
+      flowDirection,
+      diagnosis,
+    },
+  };
+}

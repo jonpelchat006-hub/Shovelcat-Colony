@@ -1,0 +1,14 @@
+# Trading brain data (private — sync via /api/colony)
+brain/
+logs/
+cache/
+trust/
+spores/
+
+# Node
+app/node_modules/
+app/dist/
+
+# OS
+.DS_Store
+Thumbs.db
