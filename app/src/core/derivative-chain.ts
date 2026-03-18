@@ -23,6 +23,7 @@
  */
 
 import { getSampler, type PlatformSampler, type GPUStats, type RAMStats } from "./sampler";
+import { computeHardwareQuaternion, getThetaPhase } from "./quaternion-chain";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -277,19 +278,24 @@ export class DerivativeChainEngine {
       }
     }
 
-    // RAM getting low
-    if (curr.ramAvailableMB < 2048) {
+    // Theory-driven pressure check: if θ is in tunneling zone (approaching φ),
+    // start evicting proactively before we hit IBH dormancy
+    const derivatives = this.getDerivatives();
+    const q = computeHardwareQuaternion(curr, derivatives);
+    const phase = getThetaPhase(q.norm);
+
+    if (phase.phase === "tunneling") {
       return {
         action: "evict",
-        reason: `RAM low: ${curr.ramAvailableMB.toFixed(0)}MB free`,
-        urgency: 0.7,
+        reason: `θ=${phase.theta.toFixed(3)} TUNNELING — approaching IBH at φ, reducing footprint`,
+        urgency: 0.6,
       };
     }
 
     return { action: "idle", reason: "system healthy", urgency: 0 };
   }
 
-  /** Calculate resource budget using φ rule */
+  /** Calculate resource budget using φ rule and θ phase dormancy */
   getBudget(): BudgetStatus {
     const n = this.history.length;
     const curr = n > 0 ? this.history[n - 1] : null;
@@ -306,16 +312,6 @@ export class DerivativeChainEngine {
         const ceilingGPU = curr.vramTotalMB * this.userCeiling;
         const availableGPU = curr.vramFreeMB * 0.8;
         gpuBudgetMB = Math.min(goldenGPU, ceilingGPU, availableGPU);
-
-        // Dormancy: VRAM critically low
-        if (curr.vramFreeMB < 500) {
-          dormant = true;
-          dormancyReason = `GPU VRAM critical: ${curr.vramFreeMB.toFixed(0)}MB free`;
-        }
-        if (curr.vramUtilPct > 95) {
-          dormant = true;
-          dormancyReason = `GPU util ${curr.vramUtilPct}% — host is busy`;
-        }
       }
 
       // RAM budget
@@ -324,9 +320,18 @@ export class DerivativeChainEngine {
       const availableRAM = curr.ramAvailableMB * 0.8;
       ramBudgetMB = Math.min(goldenRAM, ceilingRAM, availableRAM);
 
-      if (curr.ramAvailableMB < 2048) {
+      // ── Theory-driven dormancy via |q| → θ phase ──
+      // Instead of arbitrary thresholds (VRAM<500, RAM<2048),
+      // compute the hardware quaternion and check if θ ≥ φ (IBH).
+      // The theory says: at φ, information flows in but nothing useful
+      // comes out. That's exactly when a colony should go dormant.
+      const derivatives = this.getDerivatives();
+      const q = computeHardwareQuaternion(curr, derivatives);
+      const phase = getThetaPhase(q.norm);
+
+      if (phase.shouldDormant) {
         dormant = true;
-        dormancyReason = `RAM critical: ${curr.ramAvailableMB.toFixed(0)}MB free`;
+        dormancyReason = `θ=${phase.theta.toFixed(3)} → ${phase.phase.toUpperCase()} — ${phase.description}`;
       }
     }
 
