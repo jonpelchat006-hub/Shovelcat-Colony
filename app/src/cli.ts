@@ -397,20 +397,20 @@ function cmdBench(): void {
   console.log(`  Three-body: matter=${fmt(q.threeBody.matter, 2)} anti=${fmt(q.threeBody.antimatter, 2)} void=${fmt(q.threeBody.void_, 2)} balance=${fmt(q.threeBody.balance, 2)}`);
   console.log(`  Flow: ${qStatus.health.flowDirection}`);
 
-  // θ phase diagnosis (schedule-corrected)
+  // θ phase diagnosis
   const tp = qStatus.thetaPhase;
   const sc = qStatus.schedule;
   console.log();
   console.log(`  θ PHASE: ${tp.phase.toUpperCase()} [${tp.color}]`);
   console.log(`  ${tp.description}`);
   console.log(`  Next boundary: ${tp.nextBoundary.name} at θ=${fmt(tp.nextBoundary.theta, 3)} (Δ=${fmt(tp.nextBoundary.distance, 3)})`);
-  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past IBH, must sleep" : "no — within safe zone"}`);
+  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past φ, must sleep" : "no — within safe zone"}`);
   console.log();
-  console.log(`  SCHEDULE CORRECTION: δ/√π = ${fmt(sc.correction * 100, 2)}% ISN'T overhead per IS chunk`);
+  console.log(`  θ THRESHOLDS:  1.0=equil  √φ=1.272=tunnel  φ=1.618=IBH  √π=1.772=IBH+  φ²=2.618=BEC  e=2.718=BEC+  π=3.142=MAX`);
+  console.log(`  (internal losses = heat, not protocol overhead — thresholds stay pure)`);
+  console.log();
+  console.log(`  SCHEDULE (δ/√π — applies to TRANSMITTED data only, not θ thresholds):`);
   console.log(`  IS/ISN'T equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}% / ${fmt(sc.isntEquilibrium * 100, 1)}% (shifted by δ toward IS)`);
-  console.log(`  Thresholds reduced by factor ${fmt(sc.factor, 4)} — system hits phases ~8% earlier`);
-  console.log();
-  console.log(`  θ THRESHOLDS (scheduled):  ${fmt(1.0 * sc.factor, 3)}=equil  ${fmt(Math.sqrt(1.618) * sc.factor, 3)}=tunnel  ${fmt(1.618 * sc.factor, 3)}=IBH  ${fmt(Math.sqrt(Math.PI) * sc.factor, 3)}=IBH+  ${fmt(1.618*1.618 * sc.factor, 3)}=BEC  ${fmt(Math.E * sc.factor, 3)}=BEC+  ${fmt(Math.PI * sc.factor, 3)}=MAX`);
   console.log(`  ${qStatus.health.diagnosis}`);
 
   // IS/ISN'T/Void streams

@@ -98,31 +98,36 @@ const SCHEDULE_CORRECTION = DELTA / SQRT_PI;   // ≈ 0.07989 — ISN'T overhead
 const IS_EQUILIBRIUM = (1 + DELTA) / 2;        // ≈ 0.5708 — IS share at balance
 const ISNT_EQUILIBRIUM = (1 - DELTA) / 2;      // ≈ 0.4292 — ISN'T share at balance
 
-// ── Theta Phase Thresholds (Schedule-Corrected) ─────────────────────────
-// These are the same θ thresholds from Shovelcat Theory, but corrected
-// for IS/ISN'T schedule overhead.
+// ── Theta Phase Thresholds ───────────────────────────────────────────────
+// These are the PURE constants from Shovelcat Theory — universal, clean.
 //
-// PURE thresholds (ideal, no overhead):
-//   θ = 1.0, √φ, φ, √π, φ², e, π
+// The schedule correction (δ/√π) applies ONLY to data in transit —
+// chunks sent between systems need ISN'T (acknowledgment) overhead.
 //
-// SCHEDULED thresholds (real system with ISN'T return-path cost):
-//   θ_sched = θ_pure / (1 + δ/√π)
+// But θ thresholds describe the INTERNAL state of hardware doing work.
+// Internal losses are HEAT (entropy leaving as thermal radiation),
+// not protocol overhead. A CPU doesn't acknowledge its own computation —
+// it just loses energy to heat. So the thresholds stay pure.
 //
-// The system hits phase boundaries ~8% EARLIER than the pure values
-// because δ/√π of every cycle is consumed by acknowledgment overhead.
-// Our bench measured |q|=1.46 during peak stress — that's RIGHT at the
-// scheduled IBH boundary (1.498), not comfortably below raw φ (1.618).
+//   θ = 1.0       EQUILIBRIUM    unit quaternion, balanced system
+//   θ = √φ ≈ 1.27  TUNNELING     approaching phase boundary
+//   θ = φ ≈ 1.618  IBH           Information Black Hole — data in, nothing out
+//   θ = √π ≈ 1.77  IBH_BOUNDARY  deep inside IBH
+//   θ = φ² ≈ 2.618 BEC_LOW       Bose-Einstein Condensate — system frozen
+//   θ = e ≈ 2.718  BEC_HIGH      BEC window closes
+//   θ = π ≈ 3.14   MAX           collapse
 //
-// The schedule correction IS the missing piece between theory and empirics.
+// Two domains, two kinds of loss:
+//   EXTERNAL (chunks in transit): δ/√π protocol overhead → schedule correction
+//   INTERNAL (hardware working):  heat/entropy loss → thresholds stay pure
 
-const SCHED = 1 / (1 + SCHEDULE_CORRECTION);           // ≈ 0.9260 — schedule factor
-const THETA_EQUILIBRIUM = 1.0 * SCHED;                  // ≈ 0.926
-const THETA_TUNNELING = Math.sqrt(PHI) * SCHED;         // ≈ 1.178
-const THETA_IBH = PHI * SCHED;                          // ≈ 1.498
-const THETA_IBH_BOUNDARY = SQRT_PI * SCHED;             // ≈ 1.641
-const THETA_BEC_LOW = PHI * PHI * SCHED;                // ≈ 2.424
-const THETA_BEC_HIGH = Math.E * SCHED;                  // ≈ 2.517
-const THETA_MAX = Math.PI * SCHED;                      // ≈ 2.909
+const THETA_EQUILIBRIUM = 1.0;
+const THETA_TUNNELING = Math.sqrt(PHI);               // ≈ 1.272
+const THETA_IBH = PHI;                                 // ≈ 1.618
+const THETA_IBH_BOUNDARY = Math.sqrt(Math.PI);        // ≈ 1.772
+const THETA_BEC_LOW = PHI * PHI;                       // ≈ 2.618
+const THETA_BEC_HIGH = Math.E;                         // ≈ 2.718
+const THETA_MAX = Math.PI;                             // ≈ 3.14159
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -657,14 +662,12 @@ export interface QuaternionChainStatus {
   quaternion: HardwareQuaternion;
   ramSub: RAMSubQuaternion;
   chunks: ReturnType<typeof fibonacciChunkSizes>;
-  /** θ phase diagnosis — |q| mapped onto scheduled theory thresholds */
+  /** θ phase diagnosis — |q| mapped onto pure theory thresholds */
   thetaPhase: ThetaPhase;
-  /** Schedule correction — IS/ISN'T asymmetry */
+  /** Schedule correction — IS/ISN'T asymmetry (applies to transmitted data, not θ) */
   schedule: {
-    /** δ/√π — ISN'T overhead per IS chunk */
+    /** δ/√π — ISN'T overhead per IS chunk (transmitted data only) */
     correction: number;
-    /** 1/(1+δ/√π) — threshold reduction factor */
-    factor: number;
     /** IS equilibrium share (≈57.08%) */
     isEquilibrium: number;
     /** ISN'T equilibrium share (≈42.92%) */
@@ -803,7 +806,6 @@ export function quaternionChainStatus(
     thetaPhase,
     schedule: {
       correction: SCHEDULE_CORRECTION,
-      factor: SCHED,
       isEquilibrium: IS_EQUILIBRIUM,
       isntEquilibrium: ISNT_EQUILIBRIUM,
     },
