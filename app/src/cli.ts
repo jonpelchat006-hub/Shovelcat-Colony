@@ -22,6 +22,7 @@ import { MetricsCollector } from "./core/metrics";
 import { quaternionChainStatus } from "./core/quaternion-chain";
 import { runBenchmark } from "./core/benchmark";
 import { runLiveBenchmark } from "./core/live-bench";
+import { runNetBenchmark } from "./core/net-benchmark";
 import {
   loadOrCreate,
   readGeo,
@@ -470,6 +471,13 @@ switch (command) {
     runBenchmark({ diskTotalMB: mb, memoryAllocCount: allocs, verbose: true });
     break;
   }
+  case "net":
+  case "network": {
+    const mbArg = args.find(a => a.startsWith("mb="));
+    const mb = mbArg ? parseInt(mbArg.split("=")[1]) : 20;
+    runNetBenchmark({ totalMB: mb, verbose: true }).catch(console.error);
+    break;
+  }
   case "live": {
     const mbArg = args.find(a => a.startsWith("mb="));
     const mb = mbArg ? parseInt(mbArg.split("=")[1]) : 50;
@@ -495,6 +503,7 @@ switch (command) {
     console.log("  shovelcat bench             Run performance benchmark");
     console.log("  shovelcat test [mb=10]      A/B test: random vs geometric");
     console.log("  shovelcat live [mb=50]      Live test during trading scan");
+    console.log("  shovelcat net [mb=20]       Network: fixed vs Fibonacci chunks");
     console.log();
     console.log("Config keys:");
     console.log("  ceiling=0.5   Resource ceiling (0.1–0.9)");

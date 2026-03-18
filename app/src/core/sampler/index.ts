@@ -5,6 +5,7 @@
 import type { PlatformSampler } from "./interface";
 
 export type { PlatformSampler, GPUStats, RAMStats, CPUStats, DiskStats } from "./interface";
+export { getNetworkStats, type NetworkStats } from "./network";
 
 export function getSampler(): PlatformSampler {
   switch (process.platform) {
