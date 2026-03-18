@@ -21,9 +21,9 @@ export function getSampler(): PlatformSampler {
       // Fallback: return a sampler that reports zeros
       return {
         platform: process.platform,
-        getGPU: () => ({ available: false, totalMB: 0, usedMB: 0, freeMB: 0, utilPct: 0, name: "none" }),
+        getGPU: () => ({ available: false, totalMB: 0, usedMB: 0, freeMB: 0, utilPct: 0, name: "none", tempC: null, tdpTempC: null }),
         getRAM: () => ({ totalMB: 0, availableMB: 0, usedMB: 0 }),
-        getCPU: () => ({ name: "Unknown", cores: 1, threads: 1 }),
+        getCPU: () => ({ name: "Unknown", cores: 1, threads: 1, tempC: null, tjMaxC: null }),
         getDisk: () => ({ readRateMBps: 0, writeRateMBps: 0 }),
       };
   }

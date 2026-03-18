@@ -17,6 +17,10 @@ export interface GPUStats {
   freeMB: number;
   utilPct: number;
   name: string;
+  /** GPU temperature in °C (null if unavailable) */
+  tempC: number | null;
+  /** TDP / max rated temperature in °C (from spec, null if unknown) */
+  tdpTempC: number | null;
 }
 
 export interface RAMStats {
@@ -29,6 +33,10 @@ export interface CPUStats {
   cores: number;
   threads: number;
   name: string;
+  /** CPU temperature in °C (null if unavailable) */
+  tempC: number | null;
+  /** TJunction / max rated temperature in °C (from spec, null if unknown) */
+  tjMaxC: number | null;
 }
 
 export interface DiskStats {

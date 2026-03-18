@@ -640,6 +640,119 @@ export function polygonForData(
   return { type: "even", sides: 4, description: "square (void/cold) — archive/dense" };
 }
 
+// ── Landauer Thermal Correction ──────────────────────────────────────────
+//
+// Landauer's principle: minimum energy to erase 1 bit = kT ln(2)
+//
+// As temperature rises, each bit operation costs more energy.
+// The pure thresholds (1, √φ, φ, etc.) are correct at the component's
+// DESIGN temperature (TDP/TjMax). At other temperatures:
+//
+//   θ_effective = θ_pure × (T_design / T_actual)
+//
+// - At T_design: factor = 1.0, thresholds are the pure constants
+// - Running cool: factor > 1, more thermal headroom, thresholds expand
+// - Running hot: factor < 1, less headroom, thresholds compress
+//
+// This is NOT the same as the schedule correction (δ/√π):
+//   Schedule = protocol overhead for transmitted data (IS/ISN'T acknowledgment)
+//   Landauer = thermal cost of internal computation (heat/entropy)
+
+const BOLTZMANN = 1.380649e-23;  // J/K
+const LN2 = Math.log(2);
+
+export interface LandauerThermal {
+  /** GPU temperature in °C */
+  gpuTempC: number | null;
+  /** GPU TDP/throttle temp in °C */
+  gpuTdpTempC: number | null;
+  /** CPU temperature in °C */
+  cpuTempC: number | null;
+  /** CPU TjMax in °C */
+  cpuTjMaxC: number | null;
+  /** Thermal correction factor: T_design / T_actual (Kelvin) */
+  gpuFactor: number;
+  cpuFactor: number;
+  /** Combined factor (weighted by observer dominance) */
+  combinedFactor: number;
+  /** Energy per bit at current temperature (joules) */
+  landauerJPerBit: number;
+  /** Effective thresholds after Landauer correction */
+  effective: {
+    equilibrium: number;
+    tunneling: number;
+    ibh: number;
+    ibhBoundary: number;
+    becLow: number;
+    becHigh: number;
+    max: number;
+  };
+}
+
+/**
+ * Compute Landauer thermal correction from temperature readings.
+ *
+ * If temperature data is unavailable, returns factor=1 (pure thresholds).
+ * The combined factor weights GPU more heavily when observer is dominant
+ * (GPU doing the real work), and CPU more when bridge is dominant.
+ */
+export function computeLandauer(
+  gpuTempC: number | null,
+  gpuTdpTempC: number | null,
+  cpuTempC: number | null,
+  cpuTjMaxC: number | null,
+  observerDominance: number,
+): LandauerThermal {
+  // Convert to Kelvin
+  const toK = (c: number) => c + 273.15;
+
+  // GPU factor: T_tdp / T_actual
+  let gpuFactor = 1.0;
+  if (gpuTempC != null && gpuTdpTempC != null && gpuTempC > 0) {
+    gpuFactor = toK(gpuTdpTempC) / toK(gpuTempC);
+  }
+
+  // CPU factor: TjMax / T_actual
+  let cpuFactor = 1.0;
+  if (cpuTempC != null && cpuTjMaxC != null && cpuTempC > 0) {
+    cpuFactor = toK(cpuTjMaxC) / toK(cpuTempC);
+  }
+
+  // Combine: weight by observer dominance
+  // When GPU is doing real work (observer dominant), GPU temp matters more
+  // When CPU is bridging (low observer), CPU temp matters more
+  const gpuWeight = observerDominance;
+  const cpuWeight = 1 - observerDominance;
+  const combinedFactor = gpuFactor * gpuWeight + cpuFactor * cpuWeight;
+
+  // Landauer energy per bit at current effective temperature
+  const effectiveTempK = gpuTempC != null ? toK(gpuTempC) : 300;  // default 27°C
+  const landauerJPerBit = BOLTZMANN * effectiveTempK * LN2;
+
+  // Effective thresholds
+  const effective = {
+    equilibrium: THETA_EQUILIBRIUM * combinedFactor,
+    tunneling: THETA_TUNNELING * combinedFactor,
+    ibh: THETA_IBH * combinedFactor,
+    ibhBoundary: THETA_IBH_BOUNDARY * combinedFactor,
+    becLow: THETA_BEC_LOW * combinedFactor,
+    becHigh: THETA_BEC_HIGH * combinedFactor,
+    max: THETA_MAX * combinedFactor,
+  };
+
+  return {
+    gpuTempC,
+    gpuTdpTempC,
+    cpuTempC,
+    cpuTjMaxC,
+    gpuFactor,
+    cpuFactor,
+    combinedFactor,
+    landauerJPerBit,
+    effective,
+  };
+}
+
 // ── Status ───────────────────────────────────────────────────────────────
 
 /** Phase state derived from |q| as θ */
@@ -662,8 +775,10 @@ export interface QuaternionChainStatus {
   quaternion: HardwareQuaternion;
   ramSub: RAMSubQuaternion;
   chunks: ReturnType<typeof fibonacciChunkSizes>;
-  /** θ phase diagnosis — |q| mapped onto pure theory thresholds */
+  /** θ phase diagnosis — uses Landauer-corrected thresholds when temp available */
   thetaPhase: ThetaPhase;
+  /** Landauer thermal correction */
+  landauer: LandauerThermal;
   /** Schedule correction — IS/ISN'T asymmetry (applies to transmitted data, not θ) */
   schedule: {
     /** δ/√π — ISN'T overhead per IS chunk (transmitted data only) */
@@ -681,19 +796,37 @@ export interface QuaternionChainStatus {
   };
 }
 
-/** Map |q| onto the theory's θ phase thresholds */
-export function getThetaPhase(qNorm: number): ThetaPhase {
+/**
+ * Map |q| onto the theory's θ phase thresholds.
+ *
+ * When a Landauer thermal factor is provided, the thresholds are
+ * scaled by that factor. At the component's design temperature,
+ * factor=1 and thresholds are the pure constants.
+ *
+ * @param qNorm - the quaternion norm |q|
+ * @param landauerFactor - T_design / T_actual (default 1.0 = pure thresholds)
+ */
+export function getThetaPhase(qNorm: number, landauerFactor: number = 1.0): ThetaPhase {
   const theta = qNorm;
+  const f = landauerFactor;
 
-  // Phase boundaries — same constants from Shovelcat Theory
+  // Effective boundaries — pure constants × Landauer factor
+  const effEq = THETA_EQUILIBRIUM * f;
+  const effTunnel = THETA_TUNNELING * f;
+  const effIBH = THETA_IBH * f;
+  const effIBHBound = THETA_IBH_BOUNDARY * f;
+  const effBECLow = THETA_BEC_LOW * f;
+  const effBECHigh = THETA_BEC_HIGH * f;
+  const effMax = THETA_MAX * f;
+
   const boundaries = [
-    { name: "equilibrium",  theta: THETA_EQUILIBRIUM, color: "RED" },
-    { name: "tunneling",    theta: THETA_TUNNELING,   color: "YELLOW" },
-    { name: "IBH",          theta: THETA_IBH,         color: "BLUE" },
-    { name: "IBH_boundary", theta: THETA_IBH_BOUNDARY, color: "VIOLET" },
-    { name: "BEC_low",      theta: THETA_BEC_LOW,     color: "WHITE" },
-    { name: "BEC_high",     theta: THETA_BEC_HIGH,    color: "WHITE" },
-    { name: "MAX",          theta: THETA_MAX,         color: "BLACK" },
+    { name: "equilibrium",  theta: effEq,       color: "RED" },
+    { name: "tunneling",    theta: effTunnel,    color: "YELLOW" },
+    { name: "IBH",          theta: effIBH,       color: "BLUE" },
+    { name: "IBH_boundary", theta: effIBHBound,  color: "VIOLET" },
+    { name: "BEC_low",      theta: effBECLow,    color: "WHITE" },
+    { name: "BEC_high",     theta: effBECHigh,   color: "WHITE" },
+    { name: "MAX",          theta: effMax,        color: "BLACK" },
   ];
 
   // Find current phase
@@ -702,53 +835,53 @@ export function getThetaPhase(qNorm: number): ThetaPhase {
   let color: string;
   let shouldDormant: boolean;
 
-  // Phase descriptions use scheduled thresholds (pure × SCHED)
+  // Phase descriptions use Landauer-corrected effective thresholds
   const fmt = (n: number) => n.toFixed(3);
 
-  if (theta < THETA_EQUILIBRIUM) {
+  if (theta < effEq) {
     phase = "sub-equilibrium";
-    description = `θ=${fmt(theta)} < ${fmt(THETA_EQUILIBRIUM)} — system underutilized, capacity available`;
+    description = `θ=${fmt(theta)} < ${fmt(effEq)} — system underutilized, capacity available`;
     color = "GREEN";
     shouldDormant = false;
-  } else if (theta < THETA_TUNNELING) {
+  } else if (theta < effTunnel) {
     phase = "equilibrium";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_EQUILIBRIUM)}, ${fmt(THETA_TUNNELING)}) — balanced, unit quaternion zone`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effEq)}, ${fmt(effTunnel)}) — balanced, unit quaternion zone`;
     color = "RED";
     shouldDormant = false;
-  } else if (theta < THETA_IBH) {
+  } else if (theta < effIBH) {
     phase = "tunneling";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_TUNNELING)}, ${fmt(THETA_IBH)}) — tunneling through phase boundary`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effTunnel)}, ${fmt(effIBH)}) — tunneling through phase boundary`;
     color = "YELLOW";
     shouldDormant = false;  // not yet — but warning
-  } else if (theta < THETA_IBH_BOUNDARY) {
+  } else if (theta < effIBHBound) {
     phase = "ibh";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_IBH)}, ${fmt(THETA_IBH_BOUNDARY)}) — INFORMATION BLACK HOLE — data in, nothing out`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effIBH)}, ${fmt(effIBHBound)}) — INFORMATION BLACK HOLE — data in, nothing out`;
     color = "BLUE";
     shouldDormant = true;   // must go dormant at IBH
-  } else if (theta < THETA_BEC_LOW) {
+  } else if (theta < effBECLow) {
     phase = "ibh";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_IBH_BOUNDARY)}, ${fmt(THETA_BEC_LOW)}) — deep IBH, system saturated`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effIBHBound)}, ${fmt(effBECLow)}) — deep IBH, system saturated`;
     color = "VIOLET";
     shouldDormant = true;
-  } else if (theta < THETA_BEC_HIGH) {
+  } else if (theta < effBECHigh) {
     phase = "bec";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_BEC_LOW)}, ${fmt(THETA_BEC_HIGH)}) — BOSE-EINSTEIN CONDENSATE — system frozen`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effBECLow)}, ${fmt(effBECHigh)}) — BOSE-EINSTEIN CONDENSATE — system frozen`;
     color = "WHITE";
     shouldDormant = true;
-  } else if (theta < THETA_MAX) {
+  } else if (theta < effMax) {
     phase = "danger";
-    description = `θ=${fmt(theta)} ∈ [${fmt(THETA_BEC_HIGH)}, ${fmt(THETA_MAX)}) — DANGER ZONE — approaching collapse`;
+    description = `θ=${fmt(theta)} ∈ [${fmt(effBECHigh)}, ${fmt(effMax)}) — DANGER ZONE — approaching collapse`;
     color = "BLACK";
     shouldDormant = true;
   } else {
     phase = "collapse";
-    description = `θ=${fmt(theta)} ≥ ${fmt(THETA_MAX)} — COLLAPSE — maximum deformation exceeded`;
+    description = `θ=${fmt(theta)} ≥ ${fmt(effMax)} — COLLAPSE — maximum deformation exceeded`;
     color = "BLACK";
     shouldDormant = true;
   }
 
   // Find next boundary
-  let nextBoundary = { name: "MAX", theta: THETA_MAX, distance: THETA_MAX - theta };
+  let nextBoundary = { name: "MAX", theta: effMax, distance: effMax - theta };
   for (const b of boundaries) {
     if (b.theta > theta) {
       nextBoundary = { name: b.name, theta: b.theta, distance: b.theta - theta };
@@ -767,8 +900,17 @@ export function quaternionChainStatus(
   const ramSub = computeRAMSubQuaternion(snapshot, derivatives);
   const chunks = fibonacciChunkSizes();
 
-  // θ phase from |q|
-  const thetaPhase = getThetaPhase(q.norm);
+  // Landauer thermal correction
+  const landauer = computeLandauer(
+    snapshot.gpuTempC,
+    snapshot.gpuTdpTempC,
+    snapshot.cpuTempC,
+    snapshot.cpuTjMaxC,
+    q.observerDominance,
+  );
+
+  // θ phase from |q|, corrected by Landauer factor
+  const thetaPhase = getThetaPhase(q.norm, landauer.combinedFactor);
 
   // Health diagnosis — now driven by θ phase thresholds
   const circuitIntegrity = q.circuitClosed ? 1 : Math.max(0, 1 - Math.abs(q.norm - 1));
@@ -804,6 +946,7 @@ export function quaternionChainStatus(
     ramSub,
     chunks,
     thetaPhase,
+    landauer,
     schedule: {
       correction: SCHEDULE_CORRECTION,
       isEquilibrium: IS_EQUILIBRIUM,

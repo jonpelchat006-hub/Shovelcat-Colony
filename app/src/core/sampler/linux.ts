@@ -14,10 +14,12 @@ export const linuxSampler: PlatformSampler = {
   getGPU(): GPUStats {
     try {
       const out = execSync(
-        "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu --format=csv,noheader,nounits",
+        "nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,temperature.gpu.tlimit --format=csv,noheader,nounits",
         { timeout: 5000, encoding: "utf-8" },
       );
       const parts = out.trim().split(",").map(s => s.trim());
+      const tempC = parseFloat(parts[5]);
+      const tdpTempC = parseFloat(parts[6]);
       return {
         available: true,
         totalMB: parseFloat(parts[1]) || 0,
@@ -25,9 +27,11 @@ export const linuxSampler: PlatformSampler = {
         freeMB: parseFloat(parts[3]) || 0,
         utilPct: parseFloat(parts[4]) || 0,
         name: parts[0] || "Unknown GPU",
+        tempC: isNaN(tempC) ? null : tempC,
+        tdpTempC: isNaN(tdpTempC) ? null : tdpTempC,
       };
     } catch {
-      return { available: false, totalMB: 0, usedMB: 0, freeMB: 0, utilPct: 0, name: "none" };
+      return { available: false, totalMB: 0, usedMB: 0, freeMB: 0, utilPct: 0, name: "none", tempC: null, tdpTempC: null };
     }
   },
 
@@ -51,10 +55,19 @@ export const linuxSampler: PlatformSampler = {
       const name = cpuinfo.match(/model name\s*:\s*(.+)/)?.[1]?.trim() ?? "Unknown";
       const threads = (cpuinfo.match(/processor\s*:/g) || []).length;
       const cores = parseInt(cpuinfo.match(/cpu cores\s*:\s*(\d+)/)?.[1] ?? String(threads));
-      _cpuCache = { name, cores, threads };
+
+      // CPU temperature from thermal zones
+      let tempC: number | null = null;
+      try {
+        const temp = fs.readFileSync("/sys/class/thermal/thermal_zone0/temp", "utf-8");
+        const raw = parseInt(temp.trim());
+        if (!isNaN(raw)) tempC = raw / 1000;  // millidegrees to °C
+      } catch { /* not available */ }
+
+      _cpuCache = { name, cores, threads, tempC, tjMaxC: 100 };
       return _cpuCache;
     } catch {
-      return { name: "Unknown", cores: 1, threads: 1 };
+      return { name: "Unknown", cores: 1, threads: 1, tempC: null, tjMaxC: null };
     }
   },
 

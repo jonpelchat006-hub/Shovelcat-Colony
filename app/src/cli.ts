@@ -400,16 +400,27 @@ function cmdBench(): void {
   // θ phase diagnosis
   const tp = qStatus.thetaPhase;
   const sc = qStatus.schedule;
+  const la = qStatus.landauer;
   console.log();
   console.log(`  θ PHASE: ${tp.phase.toUpperCase()} [${tp.color}]`);
   console.log(`  ${tp.description}`);
   console.log(`  Next boundary: ${tp.nextBoundary.name} at θ=${fmt(tp.nextBoundary.theta, 3)} (Δ=${fmt(tp.nextBoundary.distance, 3)})`);
-  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past φ, must sleep" : "no — within safe zone"}`);
+  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past IBH, must sleep" : "no — within safe zone"}`);
   console.log();
-  console.log(`  θ THRESHOLDS:  1.0=equil  √φ=1.272=tunnel  φ=1.618=IBH  √π=1.772=IBH+  φ²=2.618=BEC  e=2.718=BEC+  π=3.142=MAX`);
-  console.log(`  (internal losses = heat, not protocol overhead — thresholds stay pure)`);
+  console.log(`  PURE θ:  1.0=equil  √φ=1.272=tunnel  φ=1.618=IBH  √π=1.772=IBH+  φ²=2.618=BEC  e=2.718=BEC+  π=3.142=MAX`);
+
+  // Landauer thermal correction
   console.log();
-  console.log(`  SCHEDULE (δ/√π — applies to TRANSMITTED data only, not θ thresholds):`);
+  console.log(`  LANDAUER THERMAL (kT ln2 — heat adjusts thresholds):`);
+  const gpuTemp = la.gpuTempC != null ? `${la.gpuTempC}°C` : "n/a";
+  const cpuTemp = la.cpuTempC != null ? `${la.cpuTempC}°C` : "n/a";
+  const gpuTdp = la.gpuTdpTempC != null ? `${la.gpuTdpTempC}°C` : "n/a";
+  console.log(`  GPU: ${gpuTemp} (TDP: ${gpuTdp}) factor=${fmt(la.gpuFactor, 4)}  CPU: ${cpuTemp} factor=${fmt(la.cpuFactor, 4)}`);
+  console.log(`  Combined: ${fmt(la.combinedFactor, 4)} (1.0 = at design temp, <1 = hot, >1 = cool)`);
+  console.log(`  Effective IBH: φ × ${fmt(la.combinedFactor, 3)} = ${fmt(la.effective.ibh, 3)}  (pure: 1.618)`);
+  console.log(`  Landauer limit: ${la.landauerJPerBit.toExponential(3)} J/bit`);
+  console.log();
+  console.log(`  SCHEDULE (δ/√π — transmitted data only, not θ):`);
   console.log(`  IS/ISN'T equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}% / ${fmt(sc.isntEquilibrium * 100, 1)}% (shifted by δ toward IS)`);
   console.log(`  ${qStatus.health.diagnosis}`);
 

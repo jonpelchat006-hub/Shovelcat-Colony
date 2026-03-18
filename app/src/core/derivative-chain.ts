@@ -23,7 +23,7 @@
  */
 
 import { getSampler, type PlatformSampler, type GPUStats, type RAMStats } from "./sampler";
-import { computeHardwareQuaternion, getThetaPhase } from "./quaternion-chain";
+import { computeHardwareQuaternion, getThetaPhase, computeLandauer } from "./quaternion-chain";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -53,6 +53,11 @@ export interface ChainSnapshot {
   vramUsedMB: number;
   vramFreeMB: number;
   vramUtilPct: number;
+  // Thermal (Landauer)
+  gpuTempC: number | null;
+  gpuTdpTempC: number | null;
+  cpuTempC: number | null;
+  cpuTjMaxC: number | null;
 }
 
 /** Derivatives computed from consecutive snapshots */
@@ -148,6 +153,8 @@ export class DerivativeChainEngine {
       }
     }
 
+    const cpu = this.sampler.getCPU();
+
     const snapshot: ChainSnapshot = {
       timestamp: Date.now(),
       diskReadMBps: disk.readRateMBps,
@@ -156,13 +163,17 @@ export class DerivativeChainEngine {
       ramAvailableMB: ram.availableMB,
       ramUsedMB: ram.usedMB,
       ramBandwidthMBps: ramBandwidth,
-      cpuCores: this.sampler.getCPU().cores,
-      cpuThreads: this.sampler.getCPU().threads,
+      cpuCores: cpu.cores,
+      cpuThreads: cpu.threads,
       vramAvailable: gpu.available,
       vramTotalMB: gpu.totalMB,
       vramUsedMB: gpu.usedMB,
       vramFreeMB: gpu.freeMB,
       vramUtilPct: gpu.utilPct,
+      gpuTempC: gpu.tempC,
+      gpuTdpTempC: gpu.tdpTempC,
+      cpuTempC: cpu.tempC,
+      cpuTjMaxC: cpu.tjMaxC,
     };
 
     this.history.push(snapshot);
@@ -282,7 +293,8 @@ export class DerivativeChainEngine {
     // start evicting proactively before we hit IBH dormancy
     const derivatives = this.getDerivatives();
     const q = computeHardwareQuaternion(curr, derivatives);
-    const phase = getThetaPhase(q.norm);
+    const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance);
+    const phase = getThetaPhase(q.norm, landauer.combinedFactor);
 
     if (phase.phase === "tunneling") {
       return {
@@ -320,14 +332,14 @@ export class DerivativeChainEngine {
       const availableRAM = curr.ramAvailableMB * 0.8;
       ramBudgetMB = Math.min(goldenRAM, ceilingRAM, availableRAM);
 
-      // ── Theory-driven dormancy via |q| → θ phase ──
-      // Instead of arbitrary thresholds (VRAM<500, RAM<2048),
-      // compute the hardware quaternion and check if θ ≥ φ (IBH).
-      // The theory says: at φ, information flows in but nothing useful
-      // comes out. That's exactly when a colony should go dormant.
+      // ── Theory-driven dormancy via |q| → θ phase (Landauer-corrected) ──
+      // The pure IBH threshold is φ, but Landauer's principle shifts it
+      // based on temperature: hot system → lower threshold (dormant sooner),
+      // cool system → higher threshold (more headroom).
       const derivatives = this.getDerivatives();
       const q = computeHardwareQuaternion(curr, derivatives);
-      const phase = getThetaPhase(q.norm);
+      const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance);
+      const phase = getThetaPhase(q.norm, landauer.combinedFactor);
 
       if (phase.shouldDormant) {
         dormant = true;
