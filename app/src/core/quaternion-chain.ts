@@ -60,8 +60,8 @@ import type { ChainSnapshot, ChainDerivatives } from "./derivative-chain";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const PHI = 1.618033988749895;
-const DELTA = Math.PI - 3;                // ≈ 0.14159 — circle-polygon gap
+export const PHI = 1.618033988749895;
+export const DELTA = Math.PI - 3;                // ≈ 0.14159 — circle-polygon gap
 const SQRT_PI = Math.sqrt(Math.PI);       // ≈ 1.7725 — IBH boundary
 const EULER_CLOSURE = Math.exp(1);        // e — base of natural growth
 const SNAKE_CONVERGENCE = 0.999;          // approaches 1, never permanent
@@ -657,19 +657,29 @@ export function polygonForData(
 //   V (volume)   = void fraction across tiers (available capacity)
 //   T (temp)     = component temperature (Landauer)
 //
-// V_design = 1/(1+φ) = 38.2% — the colony's share from the φ budget rule.
-// At design load, 38.2% of the system should be void (optionality).
+// The Boltzmann factor e^(-E/kT) naturally bounds the colony:
 //
-// Heat + void = fine (heat expands into available space)
-// Cool + full = fine (no expansion needed)
-// Hot + full  = PRESSURE — thresholds collapse multiplicatively
+//   E = system usage fraction (how full the system is: 1 - avgVoid)
+//   kT = colony budget = 1/(1+φ) ≈ 0.382
+//   Pressure factor = e^(-usage / colony_share)
 //
-// At design point (TDP temp, 38.2% void): both factors = 1.0,
-// thresholds are the pure constants: 1, √φ, φ, √π, φ², e, π.
+// This is the Boltzmann distribution applied to resource allocation:
+//   At idle (0% usage):     e^0 = 1     →  thresholds are pure constants
+//   At colony max (38.2%):  e^-1 = 1/e  →  IBH = φ/e ≈ 0.595
+//   At host share (61.8%):  e^-φ = 0.20 →  IBH = φe^-φ ≈ 0.321
+//
+// The φ budget IS the "temperature" in the Boltzmann sense.
+// Colony usage / colony share = E/kT = the occupation number.
+//
+// Combined with Landauer thermal correction:
+//   θ_effective = θ_pure × (T_design/T_actual) × e^(-usage/colony_share)
+//                           ──── Landauer ────   ──── Boltzmann ────────
+//
+// At design point (TDP temp, 0% colony usage): both = 1.0, pure thresholds.
 
-const BOLTZMANN = 1.380649e-23;  // J/K
+const BOLTZMANN_K = 1.380649e-23;  // J/K (Boltzmann constant)
 const LN2 = Math.log(2);
-const V_DESIGN = 1 / (1 + PHI);  // ≈ 0.382 — void at design load (φ budget)
+const COLONY_SHARE = 1 / (1 + PHI);  // ≈ 0.382 — colony's budget (kT)
 
 export interface LandauerThermal {
   /** GPU temperature in °C */
@@ -682,17 +692,17 @@ export interface LandauerThermal {
   cpuTjMaxC: number | null;
   /** Thermal correction: T_design / T_actual (Kelvin) */
   thermalFactor: number;
-  /** Pressure correction: V_actual / V_design */
+  /** Boltzmann pressure: e^(-usage/colony_share) */
   pressureFactor: number;
-  /** Combined: thermal × pressure */
+  /** E/kT — occupation number (usage / colony budget) */
+  eOverKT: number;
+  /** Combined: thermal × Boltzmann */
   combinedFactor: number;
   /** Average void across tiers (0 = full, 1 = empty) */
   avgVoid: number;
-  /** Effective pressure: proportional to T/V */
-  pressure: number;
   /** Energy per bit at current temperature (joules) */
   landauerJPerBit: number;
-  /** Effective thresholds after thermal + pressure correction */
+  /** Effective thresholds after thermal + Boltzmann correction */
   effective: {
     equilibrium: number;
     tunneling: number;
@@ -705,15 +715,14 @@ export interface LandauerThermal {
 }
 
 /**
- * Compute Landauer thermal + pressure correction.
+ * Compute Landauer thermal + Boltzmann pressure correction.
  *
- * PV = nRT for information systems:
- *   T factor = T_design / T_actual (from component temperatures)
- *   V factor = V_actual / V_design (from void fractions across tiers)
- *   Combined = T × V (both must be favorable for pure thresholds)
+ * Two factors multiply onto the pure thresholds:
+ *   Thermal: T_design / T_actual (Landauer heat cost per bit)
+ *   Boltzmann: e^(-usage / colony_share) (pressure from φ budget)
  *
  * If temperature data is unavailable, thermal factor defaults to 1.0.
- * Void fraction is always available from the quaternion streams.
+ * Usage = 1 - avgVoid (how full the system is).
  */
 export function computeLandauer(
   gpuTempC: number | null,
@@ -740,23 +749,25 @@ export function computeLandauer(
   const cpuWeight = 1 - observerDominance;
   const thermalFactor = gpuThermal * gpuWeight + cpuThermal * cpuWeight;
 
-  // ── Pressure factor: V_actual / V_design ──
-  // V_design = 1/(1+φ) ≈ 0.382 — the φ budget's void allocation
-  // When avgVoid ≈ 0.382: factor ≈ 1.0, design load
-  // When avgVoid > 0.382: factor > 1.0, room to spare
-  // When avgVoid → 0: factor → 0, maximum pressure
-  const pressureFactor = Math.min(2.0, avgVoid / V_DESIGN);  // cap at 2x to prevent runaway
+  // ── Boltzmann pressure: e^(-E/kT) ──
+  // E = usage = 1 - avgVoid (how full the system is)
+  // kT = COLONY_SHARE = 1/(1+φ) ≈ 0.382 (colony's budget)
+  // E/kT = occupation number — how many "slots" are filled vs budget
+  //
+  // At idle (0% usage):     e^0 = 1     →  pure thresholds
+  // At colony max (38.2%):  e^-1 = 1/e  →  IBH = φ/e ≈ 0.595
+  // At host share (61.8%):  e^-φ = 0.20 →  IBH = φe^-φ ≈ 0.321
+  const usage = 1 - avgVoid;
+  const eOverKT = usage / COLONY_SHARE;
+  const pressureFactor = Math.exp(-eOverKT);
 
   // ── Combined: PV = nRT ──
   // Both temperature AND void must be favorable for pure thresholds
   const combinedFactor = thermalFactor * pressureFactor;
 
-  // Effective pressure (dimensionless, proportional to T/V)
-  const pressure = thermalFactor > 0 ? 1 / combinedFactor : Infinity;
-
   // Landauer energy per bit at current effective temperature
   const effectiveTempK = gpuTempC != null ? toK(gpuTempC) : 300;
-  const landauerJPerBit = BOLTZMANN * effectiveTempK * LN2;
+  const landauerJPerBit = BOLTZMANN_K * effectiveTempK * LN2;
 
   // Effective thresholds: pure × combined factor
   const effective = {
@@ -776,9 +787,9 @@ export function computeLandauer(
     cpuTjMaxC,
     thermalFactor,
     pressureFactor,
+    eOverKT,
     combinedFactor,
     avgVoid,
-    pressure,
     landauerJPerBit,
     effective,
   };

@@ -9,6 +9,13 @@ spores/
 app/node_modules/
 app/dist/
 
+# Spiral drive data (local — zone contents, bridge receipts, models)
+zones/
+bridge/
+feedback/
+colony/
+spiral-manifest.json
+
 # OS
 .DS_Store
 Thumbs.db

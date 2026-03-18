@@ -23,6 +23,10 @@ import { quaternionChainStatus } from "./core/quaternion-chain";
 import { runBenchmark } from "./core/benchmark";
 import { runLiveBenchmark } from "./core/live-bench";
 import { runNetBenchmark } from "./core/net-benchmark";
+import { runRealBenchmark } from "./core/real-bench";
+import { runSpiralBenchmark, buildCollapsedField, placeTensorData, queryTensorData, printTensorField, HexGrid, sectorToSpiral, runHexVMBenchmark } from "./core/spiral-drive";
+import { computeDriveMap, createDriveStructure, writeManifest, printDriveMap } from "./core/drive-map";
+import { processIntake, queryBridge, printBridgeStatus, startBridgeDaemon, classifyFile } from "./core/bridge";
 import {
   loadOrCreate,
   readGeo,
@@ -416,10 +420,10 @@ function cmdBench(): void {
   const cpuTemp = la.cpuTempC != null ? `${la.cpuTempC}°C` : "n/a";
   const gpuTdp = la.gpuTdpTempC != null ? `${la.gpuTdpTempC}°C` : "n/a";
   console.log(`  T: GPU ${gpuTemp} (TDP: ${gpuTdp}) CPU ${cpuTemp}  →  thermal=${fmt(la.thermalFactor, 4)}`);
-  console.log(`  V: avg void=${fmt(la.avgVoid * 100, 1)}% (design: 38.2%)  →  pressure=${fmt(la.pressureFactor, 4)}`);
+  console.log(`  E/kT: usage=${fmt((1 - la.avgVoid) * 100, 1)}% / colony=38.2%  →  E/kT=${fmt(la.eOverKT, 3)}  Boltzmann=e^(-${fmt(la.eOverKT, 3)})=${fmt(la.pressureFactor, 4)}`);
   console.log(`  Combined: ${fmt(la.thermalFactor, 3)} × ${fmt(la.pressureFactor, 3)} = ${fmt(la.combinedFactor, 4)}`);
   console.log(`  Effective IBH: φ × ${fmt(la.combinedFactor, 3)} = ${fmt(la.effective.ibh, 3)}  (pure: 1.618)`);
-  console.log(`  Landauer limit: ${la.landauerJPerBit.toExponential(3)} J/bit  Pressure: ${fmt(la.pressure, 3)}`);
+  console.log(`  Landauer limit: ${la.landauerJPerBit.toExponential(3)} J/bit`);
   console.log();
   console.log(`  SCHEDULE (δ/√π — transmitted data only, not θ):`);
   console.log(`  IS/ISN'T equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}% / ${fmt(sc.isntEquilibrium * 100, 1)}% (shifted by δ toward IS)`);
@@ -476,6 +480,144 @@ function cmdBench(): void {
   console.log("\n✓ Benchmark complete. The derivative chain is working.");
 }
 
+function cmdMap(drivePath: string, apply: boolean): void {
+  const map = computeDriveMap(drivePath);
+
+  if (map.drive.totalBytes === 0) {
+    console.log(`Could not read drive info for ${drivePath}`);
+    console.log("Showing allocation for 931GB (your D: drive):");
+    console.log();
+    const fallback = computeDriveMap(drivePath, { totalBytes: 931 * 1024 * 1024 * 1024 });
+    printDriveMap(fallback);
+
+    if (apply) {
+      console.log("CREATING DIRECTORY STRUCTURE...");
+      console.log("─".repeat(70));
+      const result = createDriveStructure(fallback);
+      console.log(`  Created: ${result.created.length} directories`);
+      console.log(`  Existed: ${result.existed.length} directories`);
+      for (const dir of result.created) {
+        console.log(`    + ${dir}`);
+      }
+      console.log();
+      const manifestPath = writeManifest(fallback);
+      console.log(`  Manifest: ${manifestPath}`);
+      console.log();
+      console.log("  The spiral drive directory structure is ready.");
+      console.log("  Run `shovelcat tensor` to see the hex VM mesh overlay.");
+    } else {
+      console.log("Run with --apply to create the directory structure:");
+      console.log(`  shovelcat map drive=${drivePath} --apply`);
+    }
+    return;
+  }
+
+  printDriveMap(map);
+
+  if (apply) {
+    console.log("CREATING DIRECTORY STRUCTURE...");
+    console.log("─".repeat(70));
+    const result = createDriveStructure(map);
+    console.log(`  Created: ${result.created.length} directories`);
+    console.log(`  Existed: ${result.existed.length} directories`);
+    for (const dir of result.created) {
+      console.log(`    + ${dir}`);
+    }
+    console.log();
+    const manifestPath = writeManifest(map);
+    console.log(`  Manifest: ${manifestPath}`);
+    console.log();
+    console.log("  The spiral drive directory structure is ready.");
+    console.log("  Run `shovelcat tensor` to see the hex VM mesh overlay.");
+  } else {
+    console.log("Run with --apply to create the directory structure:");
+    console.log(`  shovelcat map drive=${drivePath} --apply`);
+  }
+}
+
+function cmdTensor(totalSectors: number = 10000): void {
+  console.log("SHOVELCAT TENSOR OVERLAY — Consciousness on Collapsed Space");
+  console.log("═".repeat(70));
+  console.log(`Sectors: ${totalSectors}`);
+  console.log();
+
+  // Build hex grid
+  const grid = new HexGrid();
+  for (let s = 0; s < totalSectors; s++) {
+    grid.assignSector(sectorToSpiral(s, totalSectors));
+  }
+
+  console.log(`Hex grid: ${grid.size} cells for ${totalSectors} sectors`);
+
+  // Build collapsed field
+  const field = buildCollapsedField(grid, totalSectors);
+  printTensorField(field);
+
+  // Demo: place a sample data item on all three axes
+  console.log("DEMO: Placing data 'AAPL-scan-001' on all three tensor axes");
+  console.log("─".repeat(70));
+
+  const modified = placeTensorData(field, "AAPL-scan-001", ["facts", "memory", "imagination"], {
+    facts: 0.9,        // high factual grounding
+    memory: 0.6,       // moderate emotional weight
+    imagination: 0.4,  // some creative projection
+  });
+
+  console.log(`  Placed on ${modified.length} cells:`);
+  for (const cell of modified) {
+    const p = cell.pressure;
+    console.log(`    (${cell.q},${cell.r}) zone=L${cell.zone} axis=${p.dominantAxis} charge=${fmt(p.charge, 3)} overlap=${cell.overlap} pattern=${fmt(cell.patternScore, 2)}`);
+  }
+  console.log();
+
+  // Query from each branch perspective
+  console.log("BRANCH RESOLUTION — Same data, three perspectives:");
+  console.log("─".repeat(70));
+
+  for (const branch of ["ai", "alpha", "club"] as const) {
+    const result = queryTensorData(field, { dataId: "AAPL-scan-001", branch });
+    const primaryStr = result.primary
+      ? `weight=${fmt(result.primary.weight, 2)}, linked to [${result.primary.linkedAxes.join(",")}]`
+      : "not found on primary axis";
+    console.log(`  ${branch.padEnd(6)} → ${result.primaryAxis.padEnd(12)} ${primaryStr}`);
+    console.log(`         cross-refs: ${result.crossRefs.length}, total weight: ${fmt(result.totalWeight, 2)}, dimensionality: ${result.dimensionality}/3`);
+  }
+
+  // Place a second item that shares axes (overlapping pattern)
+  console.log();
+  console.log("OVERLAP: Placing 'AAPL-earnings-Q4' on facts + memory (no imagination)");
+  console.log("─".repeat(70));
+
+  const modified2 = placeTensorData(field, "AAPL-earnings-Q4", ["facts", "memory"], {
+    facts: 1.0,
+    memory: 0.8,
+  });
+
+  for (const cell of modified2) {
+    const layers = Object.entries(cell.layers)
+      .filter(([_, refs]) => refs && refs.length > 0)
+      .map(([axis, refs]) => `${axis}(${refs!.length})`)
+      .join(" + ");
+    console.log(`    (${cell.q},${cell.r}) zone=L${cell.zone} overlap=${cell.overlap} layers: ${layers}`);
+  }
+
+  // Stats update
+  const totalOverlap = field.cells.filter(c => c.overlap >= 2).length;
+  const maxOv = field.cells.reduce((mx, c) => Math.max(mx, c.overlap), 0);
+  console.log();
+  console.log(`  Cells with 2+ axis overlap: ${totalOverlap}`);
+  console.log(`  Maximum overlap: ${maxOv} axes on one cell`);
+  console.log();
+  console.log(`  Data that shares axes creates PATTERN DENSITY — the tensor field`);
+  console.log(`  naturally clusters related data near the same hex cells.`);
+  console.log(`  Each branch sees its own slice: AI sees facts, Club sees imagination,`);
+  console.log(`  Alpha sees the bridge. Same truth, three lenses.`);
+  console.log();
+
+  // Run hex VM mesh benchmark
+  runHexVMBenchmark({ verbose: true, totalSectors });
+}
+
 // ── Main ───────────────────────────────────────────────────────────────
 
 const [,, command, ...args] = process.argv;
@@ -529,6 +671,96 @@ switch (command) {
     }).catch(console.error);
     break;
   }
+  case "spiral": {
+    const sectorsArg = args.find(a => a.startsWith("sectors="));
+    const sectors = sectorsArg ? parseInt(sectorsArg.split("=")[1]) : 10000;
+    runSpiralBenchmark({ verbose: true, totalSectors: sectors });
+    break;
+  }
+  case "tensor": {
+    const sectorsArg = args.find(a => a.startsWith("sectors="));
+    const sectors = sectorsArg ? parseInt(sectorsArg.split("=")[1]) : 10000;
+    cmdTensor(sectors);
+    break;
+  }
+  case "map": {
+    const driveArg = args.find(a => a.startsWith("drive="));
+    const drive = driveArg ? driveArg.split("=")[1] : "D:\\";
+    const apply = args.includes("--apply");
+    cmdMap(drive, apply);
+    break;
+  }
+  case "intake": {
+    // Process a specific file through the bridge
+    if (args.length === 0) {
+      console.log("Usage: shovelcat intake <file> [--keep]");
+      console.log("  Classifies and moves the file into the spiral drive.");
+      console.log("  --keep  Keep original file (copy instead of move)");
+      break;
+    }
+    const keepOriginal = args.includes("--keep");
+    const filePath = args.find(a => !a.startsWith("--"));
+    if (!filePath) { console.log("No file specified."); break; }
+
+    const absPath = path.resolve(filePath);
+    console.log(`Processing: ${absPath}`);
+
+    // Show classification first
+    const basename = path.basename(absPath);
+    const fileStats = fs.existsSync(absPath) ? fs.statSync(absPath) : null;
+    if (!fileStats) { console.log("File not found."); break; }
+
+    const cls = classifyFile(basename, fileStats.size);
+    console.log(`  Classification: ${cls.axis} (${cls.temperature}) → zone L${cls.zone}`);
+    console.log(`  Confidence: ${(cls.confidence * 100).toFixed(0)}% — ${cls.reason}`);
+    console.log();
+
+    const receipts = processIntake(absPath, { keepOriginal });
+    console.log(`  Stored: ${receipts[0].storage.dataPath}`);
+    console.log(`  Hash: ${receipts[0].hash.slice(0, 16)}...`);
+    console.log();
+    console.log("  Branch receipts:");
+    for (const r of receipts) {
+      console.log(`    ${r.perspective.branch.padEnd(6)} → ${r.perspective.interpretation}`);
+    }
+    break;
+  }
+  case "query": {
+    // Query the bridge from a branch perspective
+    const branch = (args.find(a => a.startsWith("branch="))?.split("=")[1] ?? "ai") as "ai" | "club" | "alpha";
+    const pattern = args.find(a => !a.startsWith("branch="));
+    const results = queryBridge(branch, pattern);
+
+    if (results.length === 0) {
+      console.log(`No results from ${branch} branch${pattern ? ` matching "${pattern}"` : ""}.`);
+    } else {
+      console.log(`${branch.toUpperCase()} BRANCH — ${results.length} result(s):`);
+      for (const r of results) {
+        console.log(`  ${r.filename.padEnd(30)} L${r.classification.zone} (${r.classification.primaryAxis}) ${(r.sizeBytes / 1024).toFixed(1)}KB`);
+        console.log(`    ${r.perspective.interpretation}`);
+      }
+    }
+    break;
+  }
+  case "bridge": {
+    if (args.includes("--watch")) {
+      // Start the bridge daemon (watch mode)
+      const daemon = startBridgeDaemon({ verbose: true });
+      process.on("SIGINT", () => { daemon.stop(); process.exit(0); });
+      process.on("SIGTERM", () => { daemon.stop(); process.exit(0); });
+    } else {
+      // Show bridge status
+      printBridgeStatus();
+    }
+    break;
+  }
+  case "real":
+  case "realworld": {
+    const scaleArg = args.find(a => a.startsWith("scale="));
+    const scale = scaleArg ? parseFloat(scaleArg.split("=")[1]) : 1;
+    runRealBenchmark({ verbose: true, scale });
+    break;
+  }
   default:
     console.log("Shovelcat — Invisible System Optimizer");
     console.log();
@@ -540,6 +772,15 @@ switch (command) {
     console.log("  shovelcat config [k=v ...]  View/update configuration");
     console.log("  shovelcat bench             Run performance benchmark");
     console.log("  shovelcat test [mb=10]      A/B test: random vs geometric");
+    console.log("  shovelcat real [scale=1]    Real-world: games, video, models");
+    console.log("  shovelcat spiral [sectors=N] Golden spiral drive addressing");
+    console.log("  shovelcat tensor [sectors=N] Tensor overlay on collapsed space");
+    console.log("  shovelcat map [drive=D:\\]   Map physical drive to spiral zones");
+    console.log("  shovelcat map --apply       Create the directory structure");
+    console.log("  shovelcat intake <file>     Send a file through the bridge");
+    console.log("  shovelcat query [pattern]   Query bridge (branch=ai|club|alpha)");
+    console.log("  shovelcat bridge            Show bridge status");
+    console.log("  shovelcat bridge --watch    Start bridge daemon (auto-intake)");
     console.log("  shovelcat live [mb=50]      Live test during trading scan");
     console.log("  shovelcat net [mb=20]       Network: fixed vs Fibonacci chunks");
     console.log();
