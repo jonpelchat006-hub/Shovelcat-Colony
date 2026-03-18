@@ -396,6 +396,16 @@ function cmdBench(): void {
   console.log(`  Circuit: ${q.circuitClosed ? "CLOSED ✓" : "OPEN"} | Observer: ${fmt(q.observerDominance * 100, 0)}%`);
   console.log(`  Three-body: matter=${fmt(q.threeBody.matter, 2)} anti=${fmt(q.threeBody.antimatter, 2)} void=${fmt(q.threeBody.void_, 2)} balance=${fmt(q.threeBody.balance, 2)}`);
   console.log(`  Flow: ${qStatus.health.flowDirection}`);
+
+  // θ phase diagnosis
+  const tp = qStatus.thetaPhase;
+  console.log();
+  console.log(`  θ PHASE: ${tp.phase.toUpperCase()} [${tp.color}]`);
+  console.log(`  ${tp.description}`);
+  console.log(`  Next boundary: ${tp.nextBoundary.name} at θ=${fmt(tp.nextBoundary.theta, 3)} (Δ=${fmt(tp.nextBoundary.distance, 3)})`);
+  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past φ, must sleep" : "no — within safe zone"}`);
+  console.log();
+  console.log(`  θ THRESHOLDS:  1.0=equil  √φ=${fmt(Math.sqrt(1.618), 3)}=tunnel  φ=${fmt(1.618, 3)}=IBH  √π=${fmt(Math.sqrt(Math.PI), 3)}=IBH+  φ²=${fmt(1.618*1.618, 3)}=BEC  e=${fmt(Math.E, 3)}=BEC+  π=${fmt(Math.PI, 3)}=MAX`);
   console.log(`  ${qStatus.health.diagnosis}`);
 
   // IS/ISN'T/Void streams

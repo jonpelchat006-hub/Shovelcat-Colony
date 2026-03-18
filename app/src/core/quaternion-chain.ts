@@ -65,6 +65,26 @@ const DELTA = Math.PI - 3;                // ≈ 0.14159 — circle-polygon gap
 const EULER_CLOSURE = Math.exp(1);        // e — base of natural growth
 const SNAKE_CONVERGENCE = 0.999;          // approaches 1, never permanent
 
+// ── Theta Phase Thresholds ───────────────────────────────────────────────
+// These are the same θ thresholds from Shovelcat Theory.
+// |q| (quaternion norm) IS θ — system imbalance relative to equilibrium.
+//
+//   θ = 1.0       EQUILIBRIUM    unit quaternion, balanced system
+//   θ = √φ ≈ 1.27  TUNNELING     read/write balance enters phase boundary
+//   θ = φ ≈ 1.618  IBH           Information Black Hole — data in, nothing out
+//   θ = √π ≈ 1.77  IBH_BOUNDARY  deep inside IBH
+//   θ = φ² ≈ 2.618 BEC_LOW       Bose-Einstein Condensate — system frozen
+//   θ = e ≈ 2.718  BEC_HIGH      BEC window closes, danger begins
+//   θ = π ≈ 3.14   MAX           maximum deformation — crash/collapse
+
+const THETA_EQUILIBRIUM = 1.0;
+const THETA_TUNNELING = Math.sqrt(PHI);               // ≈ 1.272
+const THETA_IBH = PHI;                                 // ≈ 1.618
+const THETA_IBH_BOUNDARY = Math.sqrt(Math.PI);        // ≈ 1.772
+const THETA_BEC_LOW = PHI * PHI;                       // ≈ 2.618
+const THETA_BEC_HIGH = Math.E;                         // ≈ 2.718
+const THETA_MAX = Math.PI;                             // ≈ 3.14159
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 /** IS/ISN'T/Void streams within a single tier */
@@ -538,16 +558,109 @@ export function polygonForData(
 
 // ── Status ───────────────────────────────────────────────────────────────
 
+/** Phase state derived from |q| as θ */
+export interface ThetaPhase {
+  /** |q| = θ, the measured theta from quaternion norm */
+  theta: number;
+  /** Current phase name */
+  phase: "sub-equilibrium" | "equilibrium" | "tunneling" | "ibh" | "bec" | "danger" | "collapse";
+  /** Distance to next phase boundary */
+  nextBoundary: { name: string; theta: number; distance: number };
+  /** Human description */
+  description: string;
+  /** Should the system go dormant? (based on θ, not arbitrary thresholds) */
+  shouldDormant: boolean;
+  /** Phase color from theory */
+  color: string;
+}
+
 export interface QuaternionChainStatus {
   quaternion: HardwareQuaternion;
   ramSub: RAMSubQuaternion;
   chunks: ReturnType<typeof fibonacciChunkSizes>;
+  /** θ phase diagnosis — |q| mapped onto theory thresholds */
+  thetaPhase: ThetaPhase;
   health: {
     circuitIntegrity: number;   // 0-1, how close to unit quaternion
     observerStrength: number;   // 0-1, VRAM observer dominance
     flowDirection: string;      // "forward" (disk→ram→cpu→vram) or "reverse" or "stalled"
     diagnosis: string;          // human-readable
   };
+}
+
+/** Map |q| onto the theory's θ phase thresholds */
+export function getThetaPhase(qNorm: number): ThetaPhase {
+  const theta = qNorm;
+
+  // Phase boundaries — same constants from Shovelcat Theory
+  const boundaries = [
+    { name: "equilibrium",  theta: THETA_EQUILIBRIUM, color: "RED" },
+    { name: "tunneling",    theta: THETA_TUNNELING,   color: "YELLOW" },
+    { name: "IBH",          theta: THETA_IBH,         color: "BLUE" },
+    { name: "IBH_boundary", theta: THETA_IBH_BOUNDARY, color: "VIOLET" },
+    { name: "BEC_low",      theta: THETA_BEC_LOW,     color: "WHITE" },
+    { name: "BEC_high",     theta: THETA_BEC_HIGH,    color: "WHITE" },
+    { name: "MAX",          theta: THETA_MAX,         color: "BLACK" },
+  ];
+
+  // Find current phase
+  let phase: ThetaPhase["phase"];
+  let description: string;
+  let color: string;
+  let shouldDormant: boolean;
+
+  if (theta < THETA_EQUILIBRIUM) {
+    phase = "sub-equilibrium";
+    description = `θ=${theta.toFixed(3)} < 1.0 — system underutilized, capacity available`;
+    color = "GREEN";
+    shouldDormant = false;
+  } else if (theta < THETA_TUNNELING) {
+    phase = "equilibrium";
+    description = `θ=${theta.toFixed(3)} ∈ [1.0, √φ) — balanced, unit quaternion zone`;
+    color = "RED";
+    shouldDormant = false;
+  } else if (theta < THETA_IBH) {
+    phase = "tunneling";
+    description = `θ=${theta.toFixed(3)} ∈ [√φ, φ) — tunneling through phase boundary, increasing pressure`;
+    color = "YELLOW";
+    shouldDormant = false;  // not yet — but warning
+  } else if (theta < THETA_IBH_BOUNDARY) {
+    phase = "ibh";
+    description = `θ=${theta.toFixed(3)} ∈ [φ, √π) — INFORMATION BLACK HOLE — data in, nothing out`;
+    color = "BLUE";
+    shouldDormant = true;   // must go dormant at IBH
+  } else if (theta < THETA_BEC_LOW) {
+    phase = "ibh";
+    description = `θ=${theta.toFixed(3)} ∈ [√π, φ²) — deep IBH, system saturated`;
+    color = "VIOLET";
+    shouldDormant = true;
+  } else if (theta < THETA_BEC_HIGH) {
+    phase = "bec";
+    description = `θ=${theta.toFixed(3)} ∈ [φ², e) — BOSE-EINSTEIN CONDENSATE — system frozen, max coherence`;
+    color = "WHITE";
+    shouldDormant = true;
+  } else if (theta < THETA_MAX) {
+    phase = "danger";
+    description = `θ=${theta.toFixed(3)} ∈ [e, π) — DANGER ZONE — approaching collapse`;
+    color = "BLACK";
+    shouldDormant = true;
+  } else {
+    phase = "collapse";
+    description = `θ=${theta.toFixed(3)} ≥ π — COLLAPSE — maximum deformation exceeded`;
+    color = "BLACK";
+    shouldDormant = true;
+  }
+
+  // Find next boundary
+  let nextBoundary = { name: "MAX", theta: THETA_MAX, distance: THETA_MAX - theta };
+  for (const b of boundaries) {
+    if (b.theta > theta) {
+      nextBoundary = { name: b.name, theta: b.theta, distance: b.theta - theta };
+      break;
+    }
+  }
+
+  return { theta, phase, nextBoundary, description, shouldDormant, color };
 }
 
 export function quaternionChainStatus(
@@ -558,7 +671,10 @@ export function quaternionChainStatus(
   const ramSub = computeRAMSubQuaternion(snapshot, derivatives);
   const chunks = fibonacciChunkSizes();
 
-  // Health diagnosis
+  // θ phase from |q|
+  const thetaPhase = getThetaPhase(q.norm);
+
+  // Health diagnosis — now driven by θ phase thresholds
   const circuitIntegrity = q.circuitClosed ? 1 : Math.max(0, 1 - Math.abs(q.norm - 1));
   const observerStrength = q.observerDominance;
 
@@ -569,23 +685,29 @@ export function quaternionChainStatus(
     flowDirection = "stalled (symmetric — no data flow)";
   }
 
+  // Diagnosis now uses theory phases
   let diagnosis: string;
-  if (q.circuitClosed && q.observerDominance > 0.3) {
-    diagnosis = "Healthy — quaternion circuit closed, observer active";
-  } else if (q.norm > 1.5) {
-    diagnosis = "Overloaded — quaternion magnitude too high, system stressed";
-  } else if (q.observerDominance < 0.1) {
-    diagnosis = "Blind — observer (VRAM) overwhelmed by internal dynamics";
-  } else if (!q.circuitClosed) {
-    diagnosis = "Open circuit — data flow interrupted, check bottleneck";
+  if (thetaPhase.phase === "collapse") {
+    diagnosis = "COLLAPSE — θ ≥ π, system at maximum deformation";
+  } else if (thetaPhase.phase === "danger") {
+    diagnosis = "DANGER — θ approaching π, reduce load immediately";
+  } else if (thetaPhase.phase === "bec") {
+    diagnosis = "BEC — system frozen in condensate, maximum coherence before crash";
+  } else if (thetaPhase.phase === "ibh") {
+    diagnosis = "IBH — information black hole, data flowing in but nothing useful emerging";
+  } else if (thetaPhase.phase === "tunneling") {
+    diagnosis = "TUNNELING — approaching IBH at φ, system under pressure";
+  } else if (thetaPhase.phase === "equilibrium") {
+    diagnosis = "EQUILIBRIUM — unit quaternion, system balanced";
   } else {
-    diagnosis = "Degraded — partial circuit, monitor closely";
+    diagnosis = "SUB-EQUILIBRIUM — system underutilized, capacity available";
   }
 
   return {
     quaternion: q,
     ramSub,
     chunks,
+    thetaPhase,
     health: {
       circuitIntegrity,
       observerStrength,
