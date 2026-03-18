@@ -109,7 +109,7 @@ function benchDiskFibonacci(dir: string, totalTarget: number): DiskResult {
 
   for (let li = 0; li < levels.length; li++) {
     const levelBudget = Math.floor(totalTarget * weights[li] / totalWeight);
-    const chunkSize = levels[li].bytes;
+    const chunkSize = levels[li].scheduledBytes;
     const count = Math.max(1, Math.floor(levelBudget / chunkSize));
 
     for (let i = 0; i < count; i++) {
@@ -287,8 +287,8 @@ function benchMemoryFibonacci(count: number): MemoryResult {
   const allocStart = process.hrtime();
   for (let i = 0; i < count; i++) {
     const level = levels[i % levels.length];
-    buffers.push(Buffer.alloc(level.bytes));
-    sizes.push(level.bytes);
+    buffers.push(Buffer.alloc(level.scheduledBytes));
+    sizes.push(level.scheduledBytes);
   }
   const allocMs = hrMs(allocStart);
 

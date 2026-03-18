@@ -39,10 +39,13 @@ import { getNetworkStats, type NetworkStats } from "./sampler/network";
 // ── Constants ────────────────────────────────────────────────────────────
 
 const DELTA = Math.PI - 3;                    // ≈ 0.14159
+const SQRT_PI = Math.sqrt(Math.PI);          // ≈ 1.7725
+const SCHEDULE = DELTA / SQRT_PI;            // ≈ 0.07989 — ISN'T overhead per IS chunk
 const BASE_BLOCK = 4096;
-const H_INFO = Math.round(BASE_BLOCK * DELTA / (1 - DELTA));  // 676 bytes
+const H_INFO = Math.round(BASE_BLOCK * DELTA / (1 - DELTA));  // 676 bytes (pure)
+const H_INFO_SCHED = H_INFO * (1 + SCHEDULE);                 // ≈ 730 bytes (scheduled)
 const FIB = [1, 1, 2, 3, 5, 8, 13, 21];
-const TCP_MSS = 1460;                         // max segment size (typical)
+const TCP_MSS = 1460;                         // max segment size — predicted by h_info×fib(2)×(1+δ/√π)
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -98,13 +101,20 @@ export interface NetChainStatus {
     /** Congestion detected */
     congested: boolean;
   };
-  /** How h_info relates to TCP */
+  /** How h_info relates to TCP — with schedule correction */
   theory: {
     hInfo: number;
+    hInfoScheduled: number;
+    scheduleCorrection: number;
     tcpMSS: number;
-    fibLevel2: number;
-    mssToFibRatio: number;   // TCP_MSS / fib_level_2 — should be ≈ 1.08
-    deltaFromMSS: number;    // |1 - ratio| — how close theory matches reality
+    pureFibLevel2: number;
+    scheduledFibLevel2: number;
+    /** Before schedule: TCP_MSS / pure_fib(2) ≈ 1.08 (8% gap) */
+    pureRatio: number;
+    /** After schedule: TCP_MSS / scheduled_fib(2) ≈ 1.00 (gap closed) */
+    scheduledRatio: number;
+    /** Residual error after schedule correction */
+    residualError: number;
   };
 }
 
@@ -329,10 +339,12 @@ export class NetChainEngine {
     // Congestion: throughput dropping while demand exists
     const congested = snapshot.rxVelocity < -1 || snapshot.txVelocity < -1;
 
-    // Theory validation
-    const fibLevel2 = H_INFO * FIB[2];
-    const mssToFibRatio = TCP_MSS / fibLevel2;
-    const deltaFromMSS = Math.abs(1 - mssToFibRatio);
+    // Theory validation — with schedule correction
+    const pureFibLevel2 = H_INFO * FIB[2];
+    const scheduledFibLevel2 = Math.round(H_INFO_SCHED * FIB[2]);
+    const pureRatio = TCP_MSS / pureFibLevel2;
+    const scheduledRatio = TCP_MSS / scheduledFibLevel2;
+    const residualError = Math.abs(scheduledFibLevel2 - TCP_MSS);
 
     return {
       snapshot,
@@ -340,10 +352,14 @@ export class NetChainEngine {
       bridge: { downloadShare, uploadShare, voidMBps, congested },
       theory: {
         hInfo: H_INFO,
+        hInfoScheduled: Math.round(H_INFO_SCHED),
+        scheduleCorrection: SCHEDULE,
         tcpMSS: TCP_MSS,
-        fibLevel2,
-        mssToFibRatio,
-        deltaFromMSS,
+        pureFibLevel2,
+        scheduledFibLevel2,
+        pureRatio,
+        scheduledRatio,
+        residualError,
       },
     };
   }

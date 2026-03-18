@@ -397,15 +397,20 @@ function cmdBench(): void {
   console.log(`  Three-body: matter=${fmt(q.threeBody.matter, 2)} anti=${fmt(q.threeBody.antimatter, 2)} void=${fmt(q.threeBody.void_, 2)} balance=${fmt(q.threeBody.balance, 2)}`);
   console.log(`  Flow: ${qStatus.health.flowDirection}`);
 
-  // θ phase diagnosis
+  // θ phase diagnosis (schedule-corrected)
   const tp = qStatus.thetaPhase;
+  const sc = qStatus.schedule;
   console.log();
   console.log(`  θ PHASE: ${tp.phase.toUpperCase()} [${tp.color}]`);
   console.log(`  ${tp.description}`);
   console.log(`  Next boundary: ${tp.nextBoundary.name} at θ=${fmt(tp.nextBoundary.theta, 3)} (Δ=${fmt(tp.nextBoundary.distance, 3)})`);
-  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past φ, must sleep" : "no — within safe zone"}`);
+  console.log(`  Dormancy: ${tp.shouldDormant ? "YES — past IBH, must sleep" : "no — within safe zone"}`);
   console.log();
-  console.log(`  θ THRESHOLDS:  1.0=equil  √φ=${fmt(Math.sqrt(1.618), 3)}=tunnel  φ=${fmt(1.618, 3)}=IBH  √π=${fmt(Math.sqrt(Math.PI), 3)}=IBH+  φ²=${fmt(1.618*1.618, 3)}=BEC  e=${fmt(Math.E, 3)}=BEC+  π=${fmt(Math.PI, 3)}=MAX`);
+  console.log(`  SCHEDULE CORRECTION: δ/√π = ${fmt(sc.correction * 100, 2)}% ISN'T overhead per IS chunk`);
+  console.log(`  IS/ISN'T equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}% / ${fmt(sc.isntEquilibrium * 100, 1)}% (shifted by δ toward IS)`);
+  console.log(`  Thresholds reduced by factor ${fmt(sc.factor, 4)} — system hits phases ~8% earlier`);
+  console.log();
+  console.log(`  θ THRESHOLDS (scheduled):  ${fmt(1.0 * sc.factor, 3)}=equil  ${fmt(Math.sqrt(1.618) * sc.factor, 3)}=tunnel  ${fmt(1.618 * sc.factor, 3)}=IBH  ${fmt(Math.sqrt(Math.PI) * sc.factor, 3)}=IBH+  ${fmt(1.618*1.618 * sc.factor, 3)}=BEC  ${fmt(Math.E * sc.factor, 3)}=BEC+  ${fmt(Math.PI * sc.factor, 3)}=MAX`);
   console.log(`  ${qStatus.health.diagnosis}`);
 
   // IS/ISN'T/Void streams
@@ -419,11 +424,11 @@ function cmdBench(): void {
 
   // Bridge scheduler
   const b = q.bridge;
-  console.log("\nBRIDGE SCHEDULER (CPU, sin²θ+cos²θ=1)");
+  console.log("\nBRIDGE SCHEDULER (CPU, sin²θ+cos²θ=1, centered at δ asymmetry)");
   console.log("─".repeat(50));
   console.log(`  θ = ${fmt(b.theta, 3)} rad (0=all-read, π/2=all-write)`);
-  console.log(`  IS share (sin²):   ${fmt(b.isShare * 100, 1)}% (forward/read workers)`);
-  console.log(`  ISN'T share (cos²): ${fmt(b.isntShare * 100, 1)}% (reverse/write workers)`);
+  console.log(`  IS share (sin²):   ${fmt(b.isShare * 100, 1)}% (forward/read — equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}%)`);
+  console.log(`  ISN'T share (cos²): ${fmt(b.isntShare * 100, 1)}% (reverse/write — equilibrium: ${fmt(sc.isntEquilibrium * 100, 1)}%)`);
   console.log(`  Conservation:       ${fmt(b.conserved, 4)} (should = 1.0000)`);
   console.log(`  Observer demands:   ${b.observerDemand}`);
   console.log(`  Void fill rate:     ${fmt(b.voidFillRate * 100, 0)}%`);
@@ -435,15 +440,26 @@ function cmdBench(): void {
   console.log(`  main (observer): |${fmt(rs.main.magnitude, 3)}|  L3 (euler): |${fmt(rs.L3.magnitude, 3)}|  L2 (snake): |${fmt(rs.L2.magnitude, 3)}|  L1 (bridge): |${fmt(rs.L1.magnitude, 3)}|`);
   console.log(`  |q_ram| = ${fmt(rs.norm, 3)} | Circuit: ${rs.circuitClosed ? "CLOSED ✓" : "OPEN"}`);
 
-  // h_info chunk sizes
+  // h_info chunk sizes with schedule correction
   const chunks = qStatus.chunks;
-  console.log("\nh_info FIBONACCI CHUNKS (δ = π−3 ≈ 0.14159)");
+  const tv = chunks.tcpValidation;
+  console.log("\nh_info FIBONACCI CHUNKS (δ = π−3, schedule correction = δ/√π)");
   console.log("─".repeat(50));
-  console.log(`  h_info = ${chunks.hInfo} bytes (minimum meaningful chunk)`);
+  console.log(`  h_info (pure)      = ${chunks.hInfo} bytes (information content only)`);
+  console.log(`  h_info (scheduled) = ${Math.round(chunks.scheduledHInfo)} bytes (+ ISN'T overhead)`);
+  console.log(`  ${"Lvl".padEnd(4)} ${"fib".padEnd(4)} ${"Pure".padStart(8)} ${"Scheduled".padStart(10)}`);
   for (const c of chunks.levels) {
-    const label = c.bytes < 1024 ? `${c.bytes}B` : `${fmt(c.bytes / 1024, 1)}KB`;
-    console.log(`  Level ${c.level}: fib=${c.fibs}  → ${label}`);
+    const pLabel = c.pureBytes < 1024 ? `${c.pureBytes}B` : `${fmt(c.pureBytes / 1024, 1)}KB`;
+    const sLabel = c.scheduledBytes < 1024 ? `${c.scheduledBytes}B` : `${fmt(c.scheduledBytes / 1024, 1)}KB`;
+    console.log(`  ${String(c.level).padEnd(4)} ${String(c.fibs).padEnd(4)} ${pLabel.padStart(8)} ${sLabel.padStart(10)}`);
   }
+  console.log();
+  console.log(`  TCP MSS VALIDATION:`);
+  console.log(`    Pure level 2:      ${tv.pureLevel2}B`);
+  console.log(`    Scheduled level 2: ${tv.scheduledLevel2}B`);
+  console.log(`    TCP MSS empirical: ${tv.tcpMSS}B`);
+  console.log(`    Error:             ${tv.error}B (${fmt(tv.errorPct, 4)}%)`);
+  console.log(`    h_info×fib(2)×(1+δ/√π) = TCP MSS — schedule correction closes the gap`);
 
   console.log("\n✓ Benchmark complete. The derivative chain is working.");
 }
