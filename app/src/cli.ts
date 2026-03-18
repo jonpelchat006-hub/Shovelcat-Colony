@@ -409,16 +409,17 @@ function cmdBench(): void {
   console.log();
   console.log(`  PURE θ:  1.0=equil  √φ=1.272=tunnel  φ=1.618=IBH  √π=1.772=IBH+  φ²=2.618=BEC  e=2.718=BEC+  π=3.142=MAX`);
 
-  // Landauer thermal correction
+  // PV = nRT
   console.log();
-  console.log(`  LANDAUER THERMAL (kT ln2 — heat adjusts thresholds):`);
+  console.log(`  PV = nRT (heat × pressure adjust thresholds):`);
   const gpuTemp = la.gpuTempC != null ? `${la.gpuTempC}°C` : "n/a";
   const cpuTemp = la.cpuTempC != null ? `${la.cpuTempC}°C` : "n/a";
   const gpuTdp = la.gpuTdpTempC != null ? `${la.gpuTdpTempC}°C` : "n/a";
-  console.log(`  GPU: ${gpuTemp} (TDP: ${gpuTdp}) factor=${fmt(la.gpuFactor, 4)}  CPU: ${cpuTemp} factor=${fmt(la.cpuFactor, 4)}`);
-  console.log(`  Combined: ${fmt(la.combinedFactor, 4)} (1.0 = at design temp, <1 = hot, >1 = cool)`);
+  console.log(`  T: GPU ${gpuTemp} (TDP: ${gpuTdp}) CPU ${cpuTemp}  →  thermal=${fmt(la.thermalFactor, 4)}`);
+  console.log(`  V: avg void=${fmt(la.avgVoid * 100, 1)}% (design: 38.2%)  →  pressure=${fmt(la.pressureFactor, 4)}`);
+  console.log(`  Combined: ${fmt(la.thermalFactor, 3)} × ${fmt(la.pressureFactor, 3)} = ${fmt(la.combinedFactor, 4)}`);
   console.log(`  Effective IBH: φ × ${fmt(la.combinedFactor, 3)} = ${fmt(la.effective.ibh, 3)}  (pure: 1.618)`);
-  console.log(`  Landauer limit: ${la.landauerJPerBit.toExponential(3)} J/bit`);
+  console.log(`  Landauer limit: ${la.landauerJPerBit.toExponential(3)} J/bit  Pressure: ${fmt(la.pressure, 3)}`);
   console.log();
   console.log(`  SCHEDULE (δ/√π — transmitted data only, not θ):`);
   console.log(`  IS/ISN'T equilibrium: ${fmt(sc.isEquilibrium * 100, 1)}% / ${fmt(sc.isntEquilibrium * 100, 1)}% (shifted by δ toward IS)`);

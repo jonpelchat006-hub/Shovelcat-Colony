@@ -293,7 +293,8 @@ export class DerivativeChainEngine {
     // start evicting proactively before we hit IBH dormancy
     const derivatives = this.getDerivatives();
     const q = computeHardwareQuaternion(curr, derivatives);
-    const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance);
+    const avgVoid = (q.w.streams.void_ + q.i.streams.void_ + q.j.streams.void_ + q.k.streams.void_) / 4;
+    const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance, avgVoid);
     const phase = getThetaPhase(q.norm, landauer.combinedFactor);
 
     if (phase.phase === "tunneling") {
@@ -332,13 +333,13 @@ export class DerivativeChainEngine {
       const availableRAM = curr.ramAvailableMB * 0.8;
       ramBudgetMB = Math.min(goldenRAM, ceilingRAM, availableRAM);
 
-      // ── Theory-driven dormancy via |q| → θ phase (Landauer-corrected) ──
-      // The pure IBH threshold is φ, but Landauer's principle shifts it
-      // based on temperature: hot system → lower threshold (dormant sooner),
-      // cool system → higher threshold (more headroom).
+      // ── Theory-driven dormancy via |q| → θ phase (PV=nRT corrected) ──
+      // Pure IBH threshold is φ. Landauer (heat) and pressure (void depletion)
+      // both shift where it manifests. Hot+full → dormant much sooner.
       const derivatives = this.getDerivatives();
       const q = computeHardwareQuaternion(curr, derivatives);
-      const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance);
+      const avgVoid = (q.w.streams.void_ + q.i.streams.void_ + q.j.streams.void_ + q.k.streams.void_) / 4;
+      const landauer = computeLandauer(curr.gpuTempC, curr.gpuTdpTempC, curr.cpuTempC, curr.cpuTjMaxC, q.observerDominance, avgVoid);
       const phase = getThetaPhase(q.norm, landauer.combinedFactor);
 
       if (phase.shouldDormant) {

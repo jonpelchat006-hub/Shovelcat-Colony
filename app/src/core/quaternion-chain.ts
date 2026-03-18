@@ -640,26 +640,36 @@ export function polygonForData(
   return { type: "even", sides: 4, description: "square (void/cold) — archive/dense" };
 }
 
-// ── Landauer Thermal Correction ──────────────────────────────────────────
+// ── PV = nRT — Ideal Gas Law for Information Systems ────────────────────
 //
-// Landauer's principle: minimum energy to erase 1 bit = kT ln(2)
+// Three corrections, three domains:
+//   TRANSIT:  δ/√π  — protocol overhead for transmitted chunks (IS/ISN'T)
+//   THERMAL:  kT ln(2) — Landauer's heat cost per bit erasure
+//   PRESSURE: V_actual/V_design — void depletion compresses thresholds
 //
-// As temperature rises, each bit operation costs more energy.
-// The pure thresholds (1, √φ, φ, etc.) are correct at the component's
-// DESIGN temperature (TDP/TjMax). At other temperatures:
+// The full correction combines Landauer + pressure:
 //
-//   θ_effective = θ_pure × (T_design / T_actual)
+//   θ_effective = θ_pure × (T_design / T_actual) × (V_actual / V_design)
+//                           ──── Landauer ─────    ──── Pressure ──────
 //
-// - At T_design: factor = 1.0, thresholds are the pure constants
-// - Running cool: factor > 1, more thermal headroom, thresholds expand
-// - Running hot: factor < 1, less headroom, thresholds compress
+// This IS PV = nRT applied to information:
+//   P (pressure) = what happens when hot system has no void
+//   V (volume)   = void fraction across tiers (available capacity)
+//   T (temp)     = component temperature (Landauer)
 //
-// This is NOT the same as the schedule correction (δ/√π):
-//   Schedule = protocol overhead for transmitted data (IS/ISN'T acknowledgment)
-//   Landauer = thermal cost of internal computation (heat/entropy)
+// V_design = 1/(1+φ) = 38.2% — the colony's share from the φ budget rule.
+// At design load, 38.2% of the system should be void (optionality).
+//
+// Heat + void = fine (heat expands into available space)
+// Cool + full = fine (no expansion needed)
+// Hot + full  = PRESSURE — thresholds collapse multiplicatively
+//
+// At design point (TDP temp, 38.2% void): both factors = 1.0,
+// thresholds are the pure constants: 1, √φ, φ, √π, φ², e, π.
 
 const BOLTZMANN = 1.380649e-23;  // J/K
 const LN2 = Math.log(2);
+const V_DESIGN = 1 / (1 + PHI);  // ≈ 0.382 — void at design load (φ budget)
 
 export interface LandauerThermal {
   /** GPU temperature in °C */
@@ -670,14 +680,19 @@ export interface LandauerThermal {
   cpuTempC: number | null;
   /** CPU TjMax in °C */
   cpuTjMaxC: number | null;
-  /** Thermal correction factor: T_design / T_actual (Kelvin) */
-  gpuFactor: number;
-  cpuFactor: number;
-  /** Combined factor (weighted by observer dominance) */
+  /** Thermal correction: T_design / T_actual (Kelvin) */
+  thermalFactor: number;
+  /** Pressure correction: V_actual / V_design */
+  pressureFactor: number;
+  /** Combined: thermal × pressure */
   combinedFactor: number;
+  /** Average void across tiers (0 = full, 1 = empty) */
+  avgVoid: number;
+  /** Effective pressure: proportional to T/V */
+  pressure: number;
   /** Energy per bit at current temperature (joules) */
   landauerJPerBit: number;
-  /** Effective thresholds after Landauer correction */
+  /** Effective thresholds after thermal + pressure correction */
   effective: {
     equilibrium: number;
     tunneling: number;
@@ -690,11 +705,15 @@ export interface LandauerThermal {
 }
 
 /**
- * Compute Landauer thermal correction from temperature readings.
+ * Compute Landauer thermal + pressure correction.
  *
- * If temperature data is unavailable, returns factor=1 (pure thresholds).
- * The combined factor weights GPU more heavily when observer is dominant
- * (GPU doing the real work), and CPU more when bridge is dominant.
+ * PV = nRT for information systems:
+ *   T factor = T_design / T_actual (from component temperatures)
+ *   V factor = V_actual / V_design (from void fractions across tiers)
+ *   Combined = T × V (both must be favorable for pure thresholds)
+ *
+ * If temperature data is unavailable, thermal factor defaults to 1.0.
+ * Void fraction is always available from the quaternion streams.
  */
 export function computeLandauer(
   gpuTempC: number | null,
@@ -702,34 +721,44 @@ export function computeLandauer(
   cpuTempC: number | null,
   cpuTjMaxC: number | null,
   observerDominance: number,
+  avgVoid: number,
 ): LandauerThermal {
   // Convert to Kelvin
   const toK = (c: number) => c + 273.15;
 
-  // GPU factor: T_tdp / T_actual
-  let gpuFactor = 1.0;
+  // ── Thermal factor: T_design / T_actual ──
+  let gpuThermal = 1.0;
   if (gpuTempC != null && gpuTdpTempC != null && gpuTempC > 0) {
-    gpuFactor = toK(gpuTdpTempC) / toK(gpuTempC);
+    gpuThermal = toK(gpuTdpTempC) / toK(gpuTempC);
   }
-
-  // CPU factor: TjMax / T_actual
-  let cpuFactor = 1.0;
+  let cpuThermal = 1.0;
   if (cpuTempC != null && cpuTjMaxC != null && cpuTempC > 0) {
-    cpuFactor = toK(cpuTjMaxC) / toK(cpuTempC);
+    cpuThermal = toK(cpuTjMaxC) / toK(cpuTempC);
   }
-
-  // Combine: weight by observer dominance
-  // When GPU is doing real work (observer dominant), GPU temp matters more
-  // When CPU is bridging (low observer), CPU temp matters more
+  // Weight by observer dominance
   const gpuWeight = observerDominance;
   const cpuWeight = 1 - observerDominance;
-  const combinedFactor = gpuFactor * gpuWeight + cpuFactor * cpuWeight;
+  const thermalFactor = gpuThermal * gpuWeight + cpuThermal * cpuWeight;
+
+  // ── Pressure factor: V_actual / V_design ──
+  // V_design = 1/(1+φ) ≈ 0.382 — the φ budget's void allocation
+  // When avgVoid ≈ 0.382: factor ≈ 1.0, design load
+  // When avgVoid > 0.382: factor > 1.0, room to spare
+  // When avgVoid → 0: factor → 0, maximum pressure
+  const pressureFactor = Math.min(2.0, avgVoid / V_DESIGN);  // cap at 2x to prevent runaway
+
+  // ── Combined: PV = nRT ──
+  // Both temperature AND void must be favorable for pure thresholds
+  const combinedFactor = thermalFactor * pressureFactor;
+
+  // Effective pressure (dimensionless, proportional to T/V)
+  const pressure = thermalFactor > 0 ? 1 / combinedFactor : Infinity;
 
   // Landauer energy per bit at current effective temperature
-  const effectiveTempK = gpuTempC != null ? toK(gpuTempC) : 300;  // default 27°C
+  const effectiveTempK = gpuTempC != null ? toK(gpuTempC) : 300;
   const landauerJPerBit = BOLTZMANN * effectiveTempK * LN2;
 
-  // Effective thresholds
+  // Effective thresholds: pure × combined factor
   const effective = {
     equilibrium: THETA_EQUILIBRIUM * combinedFactor,
     tunneling: THETA_TUNNELING * combinedFactor,
@@ -745,9 +774,11 @@ export function computeLandauer(
     gpuTdpTempC,
     cpuTempC,
     cpuTjMaxC,
-    gpuFactor,
-    cpuFactor,
+    thermalFactor,
+    pressureFactor,
     combinedFactor,
+    avgVoid,
+    pressure,
     landauerJPerBit,
     effective,
   };
@@ -900,13 +931,17 @@ export function quaternionChainStatus(
   const ramSub = computeRAMSubQuaternion(snapshot, derivatives);
   const chunks = fibonacciChunkSizes();
 
-  // Landauer thermal correction
+  // Average void across all tiers
+  const avgVoid = (q.w.streams.void_ + q.i.streams.void_ + q.j.streams.void_ + q.k.streams.void_) / 4;
+
+  // Landauer thermal + pressure correction (PV = nRT)
   const landauer = computeLandauer(
     snapshot.gpuTempC,
     snapshot.gpuTdpTempC,
     snapshot.cpuTempC,
     snapshot.cpuTjMaxC,
     q.observerDominance,
+    avgVoid,
   );
 
   // θ phase from |q|, corrected by Landauer factor
