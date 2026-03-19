@@ -27,6 +27,7 @@ import { runRealBenchmark } from "./core/real-bench";
 import { runSpiralBenchmark, buildCollapsedField, placeTensorData, queryTensorData, printTensorField, HexGrid, sectorToSpiral, runHexVMBenchmark } from "./core/spiral-drive";
 import { computeDriveMap, createDriveStructure, writeManifest, printDriveMap } from "./core/drive-map";
 import { processIntake, queryBridge, printBridgeStatus, startBridgeDaemon, classifyFile } from "./core/bridge";
+import { runHexModelDemo } from "./core/hex-model";
 import {
   loadOrCreate,
   readGeo,
@@ -754,6 +755,15 @@ switch (command) {
     }
     break;
   }
+  case "model":
+  case "hexmodel": {
+    const sectorsArg = args.find(a => a.startsWith("sectors="));
+    const sectors = sectorsArg ? parseInt(sectorsArg.split("=")[1]) : 10000;
+    const roundsArg = args.find(a => a.startsWith("rounds="));
+    const rounds = roundsArg ? parseInt(roundsArg.split("=")[1]) : 50;
+    runHexModelDemo({ verbose: true, totalSectors: sectors, trainingRounds: rounds });
+    break;
+  }
   case "real":
   case "realworld": {
     const scaleArg = args.find(a => a.startsWith("scale="));
@@ -779,6 +789,7 @@ switch (command) {
     console.log("  shovelcat map --apply       Create the directory structure");
     console.log("  shovelcat intake <file>     Send a file through the bridge");
     console.log("  shovelcat query [pattern]   Query bridge (branch=ai|club|alpha)");
+    console.log("  shovelcat model [sectors=N] Hex model demo (generation + deconstruction)");
     console.log("  shovelcat bridge            Show bridge status");
     console.log("  shovelcat bridge --watch    Start bridge daemon (auto-intake)");
     console.log("  shovelcat live [mb=50]      Live test during trading scan");
