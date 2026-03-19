@@ -29,6 +29,7 @@ import { computeDriveMap, createDriveStructure, writeManifest, printDriveMap } f
 import { processIntake, queryBridge, printBridgeStatus, startBridgeDaemon, classifyFile } from "./core/bridge";
 import { runHexModelDemo } from "./core/hex-model";
 import { runPolygonDemo } from "./core/polygon-model";
+import { runMeshDemo } from "./core/mesh";
 import {
   loadOrCreate,
   readGeo,
@@ -763,6 +764,14 @@ switch (command) {
     runPolygonDemo({ verbose: true, trainingRounds: rounds });
     break;
   }
+  case "mesh": {
+    const nodesArg = args.find(a => a.startsWith("nodes="));
+    const nodeCount = nodesArg ? parseInt(nodesArg.split("=")[1]) : 3;
+    const roundsArg = args.find(a => a.startsWith("rounds="));
+    const rounds = roundsArg ? parseInt(roundsArg.split("=")[1]) : 200;
+    runMeshDemo({ verbose: true, nodeCount, trainingRounds: rounds }).catch(console.error);
+    break;
+  }
   case "hexmodel": {
     const sectorsArg = args.find(a => a.startsWith("sectors="));
     const sectors = sectorsArg ? parseInt(sectorsArg.split("=")[1]) : 10000;
@@ -797,6 +806,7 @@ switch (command) {
     console.log("  shovelcat intake <file>     Send a file through the bridge");
     console.log("  shovelcat query [pattern]   Query bridge (branch=ai|club|alpha)");
     console.log("  shovelcat model [rounds=N]  Polygon model (nested △□⬠⬡○ inside a bit)");
+    console.log("  shovelcat mesh [nodes=3]    Hex mesh — connect polygon models");
     console.log("  shovelcat hexmodel          Legacy hex model demo");
     console.log("  shovelcat bridge            Show bridge status");
     console.log("  shovelcat bridge --watch    Start bridge daemon (auto-intake)");
