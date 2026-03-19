@@ -114,6 +114,37 @@ export interface AgentBubble {
   activation: number;     // 0=dormant, 1=fully active
 }
 
+// ── Membrane (Memory Skin) ─────────────────────────────────────────────
+
+export interface Scar {
+  axisIndex: number;      // which axis the trauma came from
+  depth: number;          // how deep the scar goes (0-1)
+  age: number;            // ticks since scar formed
+  source: string;         // what caused it
+}
+
+export interface Membrane {
+  /** Per-axis skin thickness [0,∞). Thicker = harder to deform. */
+  thickness: [number, number, number, number];
+  /** Total heal cycles this membrane has survived */
+  healCount: number;
+  /** Permanent scars from extreme pressure events */
+  scars: Scar[];
+  /** Base thickness — the minimum the skin returns to after decay */
+  baseThickness: number;
+}
+
+// ── Imagination Hair ───────────────────────────────────────────────────
+
+export interface Hair {
+  axisIndex: number;      // which axis it extends along
+  direction: -1 | 1;     // which way it points
+  length: number;         // how far it reaches (0-1)
+  strength: number;       // how thick/resilient (0-1, thin=fragile)
+  domain: DomainId;       // which domain it's sensing toward
+  age: number;            // ticks since it grew
+}
+
 export interface DomainBubble {
   id: DomainId;
   color: string;
@@ -130,7 +161,10 @@ export interface SchedulerResult {
   activeAgent: AgentShape | null;
   pressure: PressureVector;
   boltzmann: number;
-  explored: boolean;
+  popped: boolean;           // did the bubble pop? (pressure overcame skin)
+  popDirection: number;      // axis index where it popped (-1 = no pop)
+  skinResistance: number;    // how much the skin resisted
+  hairSensed: string[];      // hairs that sensed something this tick
   reason: string;
 }
 
@@ -167,12 +201,34 @@ function phiSplit(want: number, need: number): { ratio: number; side: "want" | "
 
 // ── Bubble Scheduler ─────────────────────────────────────────────────────
 
+// ── Skin Constants ──────────────────────────────────────────────────────
+
+const SKIN_HEAL_RATE = 0.05;          // thickness gained per heal cycle
+const SKIN_DECAY_RATE = DELTA * 0.1;  // skin slowly thins (10× slower than pressure)
+const SCAR_THRESHOLD = 0.85;          // pressure above this leaves a scar
+const SCAR_DEPTH_BASE = 0.3;          // initial scar depth
+const HAIR_GROW_RATE = 0.08;          // length gained when imagination fires
+const HAIR_DECAY_RATE = DELTA * 0.5;  // hairs thin out over time
+const HAIR_BREAK_THRESHOLD = 0.7;     // inward pressure above this snaps hairs
+const HAIR_SENSE_RANGE = 0.3;         // how far ahead hairs can detect pressure
+
 export class BubbleScheduler {
   private domains: Map<DomainId, DomainBubble> = new Map();
   private externalAxes: [number, number, number, number] = [0, 0, 0, 0];
   private temperature: number;
   private verbose: boolean;
   private tickCount: number = 0;
+
+  /** Memory skin — thickens with experience, scars from trauma */
+  membrane: Membrane = {
+    thickness: [0, 0, 0, 0],
+    healCount: 0,
+    scars: [],
+    baseThickness: 0,
+  };
+
+  /** Imagination hairs — filaments reaching into the unknown */
+  hairs: Hair[] = [];
 
   constructor(options: { temperature?: number; verbose?: boolean } = {}) {
     this.temperature = options.temperature ?? COLONY_SHARE;
@@ -240,107 +296,263 @@ export class BubbleScheduler {
     if (a) a.need += amount;
   }
 
-  /** Run one scheduler tick — determine which domain and agent activate */
+  /** Run one scheduler tick — directed pop through membrane with hair sensing */
   tick(): SchedulerResult {
     this.tickCount++;
+
+    // 0. Hair sensing — check if any hairs detect incoming pressure
+    const hairSensed: string[] = [];
+    for (const hair of this.hairs) {
+      const axisVal = Math.abs(this.externalAxes[hair.axisIndex]);
+      // Hair senses pressure at a distance proportional to its length
+      if (axisVal > HAIR_SENSE_RANGE * (1 - hair.length)) {
+        const dom = DOMAINS.find(d => d.axisIndex === hair.axisIndex && d.axisSign === hair.direction);
+        if (dom) hairSensed.push(`${dom.id}(${hair.length.toFixed(2)})`);
+      }
+    }
 
     // 1. Compute big bubble pressure vector
     const pressure = computePressure(this.externalAxes);
 
     // If no pressure, system is dormant
     if (pressure.magnitude < 0.01) {
+      this.decayMembrane();
+      this.decayHairs();
       return {
         activeDomain: null,
         activeAgent: null,
         pressure,
         boltzmann: 1,
-        explored: false,
+        popped: false,
+        popDirection: -1,
+        skinResistance: 0,
+        hairSensed,
         reason: "bubble fully pressurized — dormant",
       };
     }
 
-    // 2. Find active domain from dominant axis + direction
+    // 2. DIRECTED POP — pressure vector IS the direction, no randomness
+    //    The bubble pops where the pressure is strongest.
+    //    But skin thickness resists: effective pressure = raw - skin
+    const axisIdx = pressure.dominantAxis;
+    const skinHere = this.membrane.thickness[axisIdx];
+    const scarBonus = this.membrane.scars
+      .filter(s => s.axisIndex === axisIdx)
+      .reduce((sum, s) => sum + s.depth, 0);
+    const totalSkin = skinHere + scarBonus;
+
+    const rawPressure = Math.abs(this.externalAxes[axisIdx]);
+    const effectivePressure = Math.max(0, rawPressure - totalSkin);
+    const popped = effectivePressure > 0.01;
+
+    // If skin held, the bubble absorbed the hit — heal and thicken
+    if (!popped) {
+      this.healSkin(axisIdx, rawPressure);
+      this.decay();
+      this.decayMembrane();
+      this.decayHairs();
+      return {
+        activeDomain: null,
+        activeAgent: null,
+        pressure,
+        boltzmann: Math.exp(-rawPressure / this.temperature),
+        popped: false,
+        popDirection: axisIdx,
+        skinResistance: totalSkin,
+        hairSensed,
+        reason: `skin held (thickness=${totalSkin.toFixed(3)}, pressure=${rawPressure.toFixed(3)}) — absorbed`,
+      };
+    }
+
+    // 3. Bubble popped — find active domain from pop direction
     const domainSpec = DOMAINS.find(
       d => d.axisIndex === pressure.dominantAxis && d.axisSign === pressure.dominantSign
     );
 
     if (!domainSpec) {
+      this.decay();
       return {
         activeDomain: null,
         activeAgent: null,
         pressure,
         boltzmann: 1,
-        explored: false,
-        reason: "no matching domain for pressure direction",
+        popped: true,
+        popDirection: axisIdx,
+        skinResistance: totalSkin,
+        hairSensed,
+        reason: "popped but no matching domain",
       };
     }
 
     const domain = this.domains.get(domainSpec.id)!;
-    domain.externalPressure = Math.abs(this.externalAxes[pressure.dominantAxis]);
+    domain.externalPressure = effectivePressure;
 
-    // 3. Evaluate agents within the active domain
+    // 4. Check for scar — extreme pressure leaves permanent marks
+    if (rawPressure > SCAR_THRESHOLD) {
+      this.membrane.scars.push({
+        axisIndex: axisIdx,
+        depth: SCAR_DEPTH_BASE * (rawPressure - SCAR_THRESHOLD),
+        age: 0,
+        source: domainSpec.id,
+      });
+      if (this.verbose) {
+        console.log(`    ⚡ SCAR formed on axis ${axisIdx} (${AXIS_LABELS[axisIdx]}) depth=${(SCAR_DEPTH_BASE * (rawPressure - SCAR_THRESHOLD)).toFixed(3)}`);
+      }
+    }
+
+    // 5. Break hairs on the inward side (need pressure snaps imagination)
+    const brokenHairs: number[] = [];
+    if (rawPressure > HAIR_BREAK_THRESHOLD) {
+      for (let i = this.hairs.length - 1; i >= 0; i--) {
+        const h = this.hairs[i];
+        // Hairs on the same axis but opposite direction get snapped
+        if (h.axisIndex === axisIdx && h.direction !== pressure.dominantSign) {
+          if (rawPressure - HAIR_BREAK_THRESHOLD > h.strength) {
+            brokenHairs.push(i);
+          }
+        }
+      }
+      for (const idx of brokenHairs) {
+        this.hairs.splice(idx, 1);
+      }
+      if (brokenHairs.length > 0 && this.verbose) {
+        console.log(`    ✂ ${brokenHairs.length} hair(s) snapped by inward pressure`);
+      }
+    }
+
+    // 6. Evaluate agents — DIRECTED, not random
+    //    Pop depth determines which agents activate.
+    //    effectivePressure maps to inscribed radius: deeper pop → inner agents
     for (const agent of domain.agents) {
       agent.pressure = agent.want - agent.need;
       const split = phiSplit(agent.want, agent.need);
       agent.phiRatio = split.ratio;
 
-      // Activation: how much this agent WANTS to fire
-      // Need-driven agents (triangle) activate when need > want
-      // Want-driven agents (circle) activate when want > need
-      // Scale by inscribed radius: inner agents fire on less pressure
-      const urgency = Math.abs(agent.pressure) / (agent.radius + 0.001);
-      agent.activation = urgency;
+      // Agent activates if pop penetrates to its radius
+      // Pop depth normalized: 1.0 = full penetration to center
+      const popDepth = Math.min(1, effectivePressure);
+      const penetrationNeeded = 1 - agent.radius; // triangle=0.5, circle=0.0
+      agent.activation = popDepth > penetrationNeeded
+        ? (popDepth - penetrationNeeded) / (agent.radius + 0.001)
+        : 0;
     }
 
-    // 4. Boltzmann explore/exploit decision
-    const totalUrgency = domain.agents.reduce((s, a) => s + a.activation, 0) || 1;
-    const boltzmann = Math.exp(-totalUrgency / this.temperature);
-    const explored = Math.random() < boltzmann;
+    // 7. Boltzmann controls how FAR the pop goes, not where
+    const totalActivation = domain.agents.reduce((s, a) => s + a.activation, 0) || 1;
+    const boltzmann = Math.exp(-totalActivation / this.temperature);
 
-    // 5. Select agent
+    // 8. Select deepest activated agent (directed — no random choice)
+    //    The pop always goes to the deepest agent it can reach
+    const activeAgents = domain.agents.filter(a => a.activation > 0);
     let selectedAgent: AgentBubble;
 
-    if (explored) {
-      // Explore: pick a random agent weighted INVERSELY by urgency
-      // (try something the pressure ISN'T pushing toward)
-      const inverseWeights = domain.agents.map(a => 1 / (a.activation + 0.1));
-      const invTotal = inverseWeights.reduce((s, w) => s + w, 0);
-      let roll = Math.random() * invTotal;
-      let pick = 0;
-      for (let i = 0; i < inverseWeights.length; i++) {
-        roll -= inverseWeights[i];
-        if (roll <= 0) { pick = i; break; }
-      }
-      selectedAgent = domain.agents[pick];
+    if (activeAgents.length === 0) {
+      // Barely popped — only triangle (innermost, lowest threshold)
+      selectedAgent = domain.agents[0]; // triangle
     } else {
-      // Exploit: pick the most urgent agent
-      selectedAgent = domain.agents.reduce(
+      // Pick the agent with highest activation (deepest penetration × urgency)
+      selectedAgent = activeAgents.reduce(
         (best, a) => a.activation > best.activation ? a : best,
-        domain.agents[0]
+        activeAgents[0]
       );
     }
 
     domain.activeAgent = selectedAgent.shape;
-    domain.totalPressure = totalUrgency;
+    domain.totalPressure = totalActivation;
+
+    // 9. If imagination (circle) was selected, GROW A HAIR
+    if (selectedAgent.shape === "circle" && selectedAgent.want > selectedAgent.need) {
+      const existingHair = this.hairs.find(
+        h => h.axisIndex === axisIdx && h.direction === pressure.dominantSign
+      );
+      if (existingHair) {
+        // Existing hair gets longer and stronger
+        existingHair.length = Math.min(1, existingHair.length + HAIR_GROW_RATE);
+        existingHair.strength = Math.min(1, existingHair.strength + HAIR_GROW_RATE * PHI);
+      } else {
+        // New hair sprouts
+        this.hairs.push({
+          axisIndex: axisIdx,
+          direction: pressure.dominantSign,
+          length: HAIR_GROW_RATE,
+          strength: HAIR_GROW_RATE * PHI,
+          domain: domainSpec.id,
+          age: 0,
+        });
+      }
+      if (this.verbose) {
+        const h = this.hairs.find(
+          h => h.axisIndex === axisIdx && h.direction === pressure.dominantSign
+        )!;
+        console.log(`    ~ hair ${existingHair ? "grew" : "sprouted"} → ${domainSpec.id} len=${h.length.toFixed(3)} str=${h.strength.toFixed(3)}`);
+      }
+    }
+
+    // 10. Heal the skin where the pop happened (it grows back thicker)
+    this.healSkin(axisIdx, rawPressure);
 
     const split = phiSplit(selectedAgent.want, selectedAgent.need);
     const reason =
       `${domainSpec.id}/${selectedAgent.shape} — ` +
       `${split.side} (φ=${split.ratio.toFixed(3)}) ` +
-      `${explored ? "EXPLORED" : "exploited"} ` +
+      `popped (skin=${totalSkin.toFixed(3)} eff=${effectivePressure.toFixed(3)}) ` +
       `(boltz=${boltzmann.toFixed(3)})`;
 
-    // 6. Decay all pressures toward dormant
+    // 11. Decay all pressures toward dormant
     this.decay();
+    this.decayMembrane();
+    this.decayHairs();
 
     return {
       activeDomain: domainSpec.id,
       activeAgent: selectedAgent.shape,
       pressure,
       boltzmann,
-      explored,
+      popped: true,
+      popDirection: axisIdx,
+      skinResistance: totalSkin,
+      hairSensed,
       reason,
     };
+  }
+
+  /** Heal skin at an axis — thickens from surviving pressure */
+  private healSkin(axisIdx: number, pressureAmount: number): void {
+    // Thickening proportional to pressure survived (harder hit → more callous)
+    const healAmount = SKIN_HEAL_RATE * pressureAmount;
+    this.membrane.thickness[axisIdx] += healAmount;
+    this.membrane.healCount++;
+
+    // Base thickness ratchets up slowly (overall toughening)
+    this.membrane.baseThickness += healAmount * COLONY_SHARE * 0.1;
+  }
+
+  /** Skin slowly thins back toward base (but never below base) */
+  private decayMembrane(): void {
+    for (let i = 0; i < 4; i++) {
+      const excess = this.membrane.thickness[i] - this.membrane.baseThickness;
+      if (excess > 0) {
+        this.membrane.thickness[i] -= excess * SKIN_DECAY_RATE;
+      }
+    }
+    // Scars age but never fully heal
+    for (const scar of this.membrane.scars) {
+      scar.age++;
+    }
+  }
+
+  /** Hairs thin and shorten over time without stimulation */
+  private decayHairs(): void {
+    for (let i = this.hairs.length - 1; i >= 0; i--) {
+      const h = this.hairs[i];
+      h.age++;
+      h.strength -= HAIR_DECAY_RATE * 0.1;
+      h.length -= HAIR_DECAY_RATE * 0.05;
+      // Dead hairs fall off
+      if (h.strength <= 0 || h.length <= 0) {
+        this.hairs.splice(i, 1);
+      }
+    }
   }
 
   /** Decay all pressures toward zero (bubble returning to circle) */
@@ -370,6 +582,8 @@ export class BubbleScheduler {
       activeAgent: AgentShape | null;
       agents: AgentBubble[];
     }>;
+    membrane: Membrane;
+    hairs: Hair[];
     temperature: number;
     tickCount: number;
     dormant: boolean;
@@ -389,6 +603,8 @@ export class BubbleScheduler {
     return {
       pressure,
       domains: domainList,
+      membrane: { ...this.membrane, scars: [...this.membrane.scars] },
+      hairs: [...this.hairs],
       temperature: this.temperature,
       tickCount: this.tickCount,
       dormant: pressure.magnitude < 0.01,
@@ -430,88 +646,197 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
 
   const sched = new BubbleScheduler({ verbose });
 
-  // ── Scenario 1: Security threat ──────────────────────────────────
+  // ── Scenario 1: First security threat — thin skin, pops easily ───
   if (verbose) {
-    console.log("  SCENARIO 1: Security threat detected");
+    console.log("  SCENARIO 1: First security threat (thin skin)");
     console.log("  " + "─".repeat(66));
   }
 
-  sched.applyPressure("threat detected", { 0: -0.8 });  // strong push toward security (axis 0, negative)
-  sched.applyNeed("security", "triangle", 0.9);          // urgent need for facts
-  sched.applyNeed("security", "square", 0.5);            // need to observe
-  sched.applyWant("security", "circle", 0.1);            // slight curiosity
+  sched.applyPressure("threat detected", { 0: -0.8 });
+  sched.applyNeed("security", "triangle", 0.9);
+  sched.applyNeed("security", "square", 0.5);
+  sched.applyWant("security", "circle", 0.1);
 
   const r1 = sched.tick();
   if (verbose) {
     console.log(`    → ${r1.reason}`);
-    console.log(`      pressure: [${r1.pressure.axes.map(v => fmt(v)).join(", ")}] |p|=${fmt(r1.pressure.magnitude)}`);
+    console.log(`      popped=${r1.popped} skinResist=${fmt(r1.skinResistance)}`);
+    const m = sched.status().membrane;
+    console.log(`      skin after: [${m.thickness.map(t => fmt(t)).join(", ")}] base=${fmt(m.baseThickness)}`);
     console.log();
   }
 
-  // ── Scenario 2: New data arrives (curiosity) ─────────────────────
+  // Let it heal a few ticks
+  for (let i = 0; i < 5; i++) sched.tick();
+
+  // ── Scenario 2: Repeat security threat — skin is thicker now ─────
   if (verbose) {
-    console.log("  SCENARIO 2: Interesting pattern in new data");
+    console.log("  SCENARIO 2: Same threat again (thicker skin)");
     console.log("  " + "─".repeat(66));
+    const m = sched.status().membrane;
+    console.log(`      skin before: [${m.thickness.map(t => fmt(t)).join(", ")}]`);
   }
 
-  sched.applyPressure("new pattern found", { 2: -0.6 });  // push toward explore
-  sched.applyWant("explore", "circle", 0.8);               // strong want to imagine
-  sched.applyWant("explore", "hexagon", 0.5);              // want to match patterns
-  sched.applyNeed("explore", "triangle", 0.1);             // mild grounding
+  sched.applyPressure("repeat attack", { 0: -0.5 });
+  sched.applyNeed("security", "triangle", 0.6);
 
   const r2 = sched.tick();
   if (verbose) {
     console.log(`    → ${r2.reason}`);
-    console.log(`      pressure: [${r2.pressure.axes.map(v => fmt(v)).join(", ")}] |p|=${fmt(r2.pressure.magnitude)}`);
+    console.log(`      popped=${r2.popped} skinResist=${fmt(r2.skinResistance)}`);
     console.log();
   }
 
-  // ── Scenario 3: Trading signal (multi-axis) ──────────────────────
+  // ── Scenario 3: Extreme pressure — leaves a SCAR ────────────────
   if (verbose) {
-    console.log("  SCENARIO 3: Trading signal — multiple domains pressurized");
+    console.log("  SCENARIO 3: Extreme pressure — SCAR formation");
     console.log("  " + "─".repeat(66));
   }
 
-  sched.applyPressure("AAPL price anomaly", { 1: +0.7, 2: +0.4 }); // science + learn
-  sched.applyNeed("science", "triangle", 0.7);   // need facts on the anomaly
-  sched.applyWant("science", "pentagon", 0.6);    // want truth verification
-  sched.applyNeed("learn", "hexagon", 0.5);       // need memory of past patterns
+  sched.applyPressure("catastrophic breach", { 0: -1.2 });
+  sched.applyNeed("security", "triangle", 1.0);
 
   const r3 = sched.tick();
   if (verbose) {
+    const m = sched.status().membrane;
     console.log(`    → ${r3.reason}`);
-    console.log(`      pressure: [${r3.pressure.axes.map(v => fmt(v)).join(", ")}] |p|=${fmt(r3.pressure.magnitude)}`);
+    console.log(`      scars: ${m.scars.length}`);
+    for (const scar of m.scars) {
+      console.log(`        axis ${scar.axisIndex} (${AXIS_LABELS[scar.axisIndex]}) depth=${fmt(scar.depth)} from ${scar.source}`);
+    }
     console.log();
   }
 
-  // ── Decay to dormant ─────────────────────────────────────────────
+  // ── Scenario 4: Imagination grows HAIR ───────────────────────────
+  if (verbose) {
+    console.log("  SCENARIO 4: Curiosity — imagination grows hair");
+    console.log("  " + "─".repeat(66));
+  }
+
+  sched.applyPressure("new pattern", { 2: -0.7 });
+  sched.applyWant("explore", "circle", 0.9);    // strong imagination want
+  sched.applyWant("explore", "hexagon", 0.3);
+
+  const r4 = sched.tick();
+  if (verbose) {
+    console.log(`    → ${r4.reason}`);
+    const st = sched.status();
+    console.log(`      hairs: ${st.hairs.length}`);
+    for (const h of st.hairs) {
+      const dir = h.direction > 0 ? "+" : "-";
+      console.log(`        axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)}`);
+    }
+    console.log();
+  }
+
+  // Grow the hair by repeating imagination
+  for (let i = 0; i < 3; i++) {
+    sched.applyPressure("more curiosity", { 2: -0.5 });
+    sched.applyWant("explore", "circle", 0.7);
+    sched.tick();
+  }
+
+  if (verbose) {
+    const st = sched.status();
+    console.log("  HAIR GROWTH (after 3 more imagination cycles):");
+    console.log("  " + "─".repeat(66));
+    for (const h of st.hairs) {
+      const dir = h.direction > 0 ? "+" : "-";
+      console.log(`    axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)} age=${h.age}`);
+    }
+    console.log();
+  }
+
+  // ── Scenario 5: Inward pressure SNAPS hairs ─────────────────────
+  if (verbose) {
+    console.log("  SCENARIO 5: Strong need snaps fragile hairs");
+    console.log("  " + "─".repeat(66));
+    console.log(`      hairs before: ${sched.status().hairs.length}`);
+  }
+
+  sched.applyPressure("urgent learn demand", { 2: +0.9 }); // opposite direction on same axis
+  sched.applyNeed("learn", "triangle", 0.8);
+
+  const r5 = sched.tick();
+  if (verbose) {
+    console.log(`    → ${r5.reason}`);
+    console.log(`      hairs after: ${sched.status().hairs.length}`);
+    console.log();
+  }
+
+  // ── Scenario 6: Hair SENSES incoming pressure early ──────────────
+  if (verbose) {
+    console.log("  SCENARIO 6: Hair senses distant pressure");
+    console.log("  " + "─".repeat(66));
+  }
+
+  // Grow a fresh hair toward science
+  sched.applyPressure("science curiosity", { 1: +0.6 });
+  sched.applyWant("science", "circle", 0.8);
+  sched.tick(); // grow the hair
+
+  // Now apply mild pressure — hair should sense it before skin would react
+  sched.applyPressure("faint science signal", { 1: +0.15 });
+  const r6 = sched.tick();
+  if (verbose) {
+    console.log(`    → ${r6.reason}`);
+    console.log(`      hairSensed: [${r6.hairSensed.join(", ")}]`);
+    console.log();
+  }
+
+  // ── Decay + final state ──────────────────────────────────────────
+  if (verbose) {
+    console.log("  MEMBRANE & HAIR STATE (after full session):");
+    console.log("  " + "─".repeat(66));
+    const st = sched.status();
+    console.log(`    skin: [${st.membrane.thickness.map(t => fmt(t)).join(", ")}]`);
+    console.log(`    base: ${fmt(st.membrane.baseThickness)} (lifetime floor)`);
+    console.log(`    heals: ${st.membrane.healCount}`);
+    console.log(`    scars: ${st.membrane.scars.length}`);
+    for (const s of st.membrane.scars) {
+      console.log(`      axis ${s.axisIndex} depth=${fmt(s.depth)} age=${s.age} (${s.source})`);
+    }
+    console.log(`    hairs: ${st.hairs.length}`);
+    for (const h of st.hairs) {
+      const dir = h.direction > 0 ? "+" : "-";
+      console.log(`      axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)} age=${h.age}`);
+    }
+    console.log();
+  }
+
+  // Decay to dormant
   if (verbose) {
     console.log("  DECAY (bubble returning to circle):");
     console.log("  " + "─".repeat(66));
   }
 
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 25; i++) {
     const r = sched.tick();
-    if (verbose && (i === 0 || i === 4 || i === 9 || i === 14 || i === 19)) {
+    if (verbose && (i === 0 || i === 4 || i === 9 || i === 14 || i === 19 || i === 24)) {
       const st = sched.status();
       const state = st.dormant ? "DORMANT ○" : `active → ${r.activeDomain}/${r.activeAgent}`;
-      console.log(`    tick ${String(i + 4).padStart(2)}: |p|=${fmt(st.pressure.magnitude)} ${state}`);
+      const skinStr = st.membrane.thickness.map(t => fmt(t, 2)).join(",");
+      console.log(`    tick ${String(st.tickCount).padStart(2)}: |p|=${fmt(st.pressure.magnitude)} skin=[${skinStr}] hairs=${st.hairs.length} ${state}`);
     }
     if (sched.status().dormant) {
-      if (verbose) console.log(`    → bubble fully pressurized at tick ${i + 4}. System at rest.`);
+      if (verbose) console.log(`    → bubble at rest. Skin remembers. Scars remain. Hairs decay.`);
       break;
     }
   }
 
   if (verbose) {
     console.log();
-    console.log("  THE BUBBLE:");
-    console.log(`    Fully pressurized = circle = dormant. No action needed.`);
-    console.log(`    Wants push outward → imagination (○). Needs push inward → facts (△).`);
-    console.log(`    φ split (61.8/38.2) evaluates want vs need at every level.`);
-    console.log(`    Boltzmann e^(-E/kT) decides explore vs exploit each tick.`);
-    console.log(`    External pressure → which domain. Internal pressure → which agent.`);
-    console.log(`    Pressure decays by δ (${fmt(DELTA)}) per tick → returns to dormant.`);
+    console.log("  THE LIVING BUBBLE:");
+    console.log(`    Skin (memory) thickens each time it heals from pressure.`);
+    console.log(`    Scars form from extreme events — permanent thick spots.`);
+    console.log(`    Repeated pressure → callous → the bubble becomes resilient there.`);
+    console.log(`    Hairs (imagination) grow outward when curiosity fires.`);
+    console.log(`    They sense distant pressure before the skin feels it.`);
+    console.log(`    Strong inward pressure snaps fragile hairs — trauma kills curiosity.`);
+    console.log(`    But hairs regrow when imagination activates again.`);
+    console.log(`    The bubble POPS in a directed way — pressure vector = direction.`);
+    console.log(`    No random exploration. The system goes where it's pushed.`);
+    console.log(`    Boltzmann controls depth of pop, not direction.`);
     console.log();
   }
 }
