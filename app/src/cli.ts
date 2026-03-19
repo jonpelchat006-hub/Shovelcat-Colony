@@ -28,6 +28,7 @@ import { runSpiralBenchmark, buildCollapsedField, placeTensorData, queryTensorDa
 import { computeDriveMap, createDriveStructure, writeManifest, printDriveMap } from "./core/drive-map";
 import { processIntake, queryBridge, printBridgeStatus, startBridgeDaemon, classifyFile } from "./core/bridge";
 import { runHexModelDemo } from "./core/hex-model";
+import { runPolygonDemo } from "./core/polygon-model";
 import {
   loadOrCreate,
   readGeo,
@@ -756,6 +757,12 @@ switch (command) {
     break;
   }
   case "model":
+  case "polygon": {
+    const roundsArg = args.find(a => a.startsWith("rounds="));
+    const rounds = roundsArg ? parseInt(roundsArg.split("=")[1]) : 300;
+    runPolygonDemo({ verbose: true, trainingRounds: rounds });
+    break;
+  }
   case "hexmodel": {
     const sectorsArg = args.find(a => a.startsWith("sectors="));
     const sectors = sectorsArg ? parseInt(sectorsArg.split("=")[1]) : 10000;
@@ -789,7 +796,8 @@ switch (command) {
     console.log("  shovelcat map --apply       Create the directory structure");
     console.log("  shovelcat intake <file>     Send a file through the bridge");
     console.log("  shovelcat query [pattern]   Query bridge (branch=ai|club|alpha)");
-    console.log("  shovelcat model [sectors=N] Hex model demo (generation + deconstruction)");
+    console.log("  shovelcat model [rounds=N]  Polygon model (nested △□⬠⬡○ inside a bit)");
+    console.log("  shovelcat hexmodel          Legacy hex model demo");
     console.log("  shovelcat bridge            Show bridge status");
     console.log("  shovelcat bridge --watch    Start bridge daemon (auto-intake)");
     console.log("  shovelcat live [mb=50]      Live test during trading scan");
