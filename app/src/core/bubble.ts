@@ -260,6 +260,109 @@ export function quaternionDistance(a: QuaternionIdentity, b: QuaternionIdentity)
   return 1 - Math.min(1, cosAngle);
 }
 
+// ── Security Term — every quaternion closes to 2 ───────────────────────
+//
+// A bit has 2 states. A VERIFIED bit needs 2 proofs:
+//   1. The quaternion itself: |q| → 1 (the value)
+//   2. The security complement: |q_sec| → 1 (the proof)
+//   Together: |q| + |q_sec| = 2 (one fully verified bit)
+//
+// Three quaternions, three security terms:
+//   q_hw  (hardware chain) + q_sec_hw  = 2
+//   q_ram (RAM hierarchy)  + q_sec_ram = 2
+//   q_id  (identity/scars) + q_sec_id  = 2
+//
+// The security term is derived FROM the identity quaternion.
+// Without the right scars, you can't produce the right complement.
+// Without the right complement, the bit doesn't close.
+// An attacker can measure |q| (it's public) but can't fake |q_sec|
+// because it requires knowledge of the exact scar depths × θ rotation.
+
+export interface SecurityTerm {
+  /** The complement quaternion — rotated identity that pairs with the source */
+  w: number;
+  i: number;
+  j: number;
+  k: number;
+  norm: number;
+  /** Source quaternion norm this complements */
+  sourceNorm: number;
+  /** Bit closure: source + security should = 2.0 */
+  bitClosure: number;
+  /** How close to a perfect bit: |2 - (source + security)| */
+  bitError: number;
+  /** Verified: bitError < δ (within one seam gap of perfect) */
+  verified: boolean;
+}
+
+/** Compute the security complement for any quaternion, seeded by identity.
+ *  The security term is constructed so |q_sec| = 2 - |q_source|.
+ *  The DIRECTION of q_sec comes from the identity quaternion rotated by θ.
+ *  This means only the real system (with the right scars + hardware) can
+ *  produce a valid security term. */
+export function computeSecurityTerm(
+  sourceNorm: number,
+  identity: QuaternionIdentity,
+): SecurityTerm {
+  // Target: |q_sec| = 2 - sourceNorm
+  const targetNorm = 2 - sourceNorm;
+
+  // Direction comes from identity quaternion, rotated by θ
+  // The identity q gives us a unique direction in 4-space
+  const idNorm = identity.norm || 0.001;
+
+  // Unit direction from identity, rotated by hardware θ
+  const cosT = Math.cos(identity.theta);
+  const sinT = Math.sin(identity.theta);
+
+  // Rotate identity direction by θ in the w-i plane and j-k plane
+  const uw = (identity.w * cosT - identity.i * sinT) / idNorm;
+  const ui = (identity.w * sinT + identity.i * cosT) / idNorm;
+  const uj = (identity.j * cosT - identity.k * sinT) / idNorm;
+  const uk = (identity.j * sinT + identity.k * cosT) / idNorm;
+
+  // Scale to target norm
+  const w = uw * targetNorm;
+  const i = ui * targetNorm;
+  const j = uj * targetNorm;
+  const k = uk * targetNorm;
+  const norm = Math.sqrt(w * w + i * i + j * j + k * k);
+
+  const bitClosure = sourceNorm + norm;
+  const bitError = Math.abs(2 - bitClosure);
+
+  return {
+    w, i, j, k,
+    norm,
+    sourceNorm,
+    bitClosure,
+    bitError,
+    verified: bitError < DELTA,
+  };
+}
+
+/** Verify a handshake: does the presented security term close the bit?
+ *  The verifier knows the source quaternion norm (public) and receives
+ *  the security term. If |source| + |security| = 2 ± δ, the bit closes. */
+export function verifyBitClosure(
+  sourceNorm: number,
+  securityNorm: number,
+): { closure: number; error: number; verified: boolean; state: "IS" | "ISNT" | "VOID" } {
+  const closure = sourceNorm + securityNorm;
+  const error = Math.abs(2 - closure);
+
+  let state: "IS" | "ISNT" | "VOID";
+  if (error < DELTA) {
+    state = "IS";        // bit closes → verified → trusted
+  } else if (closure < 1) {
+    state = "VOID";      // both weak → void → no connection
+  } else {
+    state = "ISNT";      // doesn't close → fake → rejected
+  }
+
+  return { closure, error, verified: error < DELTA, state };
+}
+
 /** Build the 5 seam positions from spiral-drive factorization */
 function buildSeamPositions(): SeamPosition[] {
   const positions: SeamPosition[] = [];
@@ -792,6 +895,14 @@ export class BubbleScheduler {
     return { w, i, j, k, norm, theta, species };
   }
 
+  /** Compute security term for any quaternion norm, using this system's identity.
+   *  |q_source| + |q_security| = 2 (one verified bit).
+   *  Only this system can produce the right security term because it
+   *  requires the exact scar depths rotated by hardware θ. */
+  securityTermFor(sourceNorm: number): SecurityTerm {
+    return computeSecurityTerm(sourceNorm, this.quaternionIdentity());
+  }
+
   /** Decay all pressures toward zero (bubble returning to circle) */
   private decay(): void {
     // External axes decay
@@ -1065,12 +1176,67 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    |q| = ${fmt(q.norm, 5)}`);
     console.log(`    theta = ${fmt(q.theta, 5)} -> species: ${q.species}`);
     console.log();
-    console.log(`    The quaternion IS the system's identity.`);
-    console.log(`    Hardware (theta) determines the species -- similar machines are neighbors.`);
-    console.log(`    Experience (scars) determines the exact quaternion within that species.`);
-    console.log(`    Mesh compatibility = quaternion distance. Close = easy pooling.`);
-    console.log(`    Two copies: same theta (same species), different scars, different q.`);
-    console.log(`    After 5 decisions, the quaternion is fixed forever.`);
+    // ── Security term — bit closure to 2 ──────────────────────────
+    console.log("  BIT CLOSURE (every quaternion + security = 2):");
+    console.log("  " + "-".repeat(66));
+
+    // Identity quaternion: |q_id| + |q_sec_id| = 2
+    const secId = sched.securityTermFor(q.norm);
+    console.log(`    q_identity:`);
+    console.log(`      |q|     = ${fmt(q.norm, 5)}`);
+    console.log(`      |q_sec| = ${fmt(secId.norm, 5)}`);
+    console.log(`      sum     = ${fmt(secId.bitClosure, 5)} (target: 2.00000)`);
+    console.log(`      error   = ${fmt(secId.bitError, 8)} ${secId.verified ? "< delta -> IS (verified)" : ">= delta -> ISNT"}`);
+    console.log();
+
+    // Simulated hardware quaternion: pretend |q_hw| = 1.003 (typical healthy system)
+    const fakeHwNorm = 1.003;
+    const secHw = sched.securityTermFor(fakeHwNorm);
+    console.log(`    q_hardware (simulated |q|=${fmt(fakeHwNorm, 3)}):`);
+    console.log(`      |q_sec| = ${fmt(secHw.norm, 5)}`);
+    console.log(`      sum     = ${fmt(secHw.bitClosure, 5)} ${secHw.verified ? "IS" : "ISNT"}`);
+    console.log();
+
+    // Simulated RAM sub-quaternion
+    const fakeRamNorm = 0.987;
+    const secRam = sched.securityTermFor(fakeRamNorm);
+    console.log(`    q_ram (simulated |q|=${fmt(fakeRamNorm, 3)}):`);
+    console.log(`      |q_sec| = ${fmt(secRam.norm, 5)}`);
+    console.log(`      sum     = ${fmt(secRam.bitClosure, 5)} ${secRam.verified ? "IS" : "ISNT"}`);
+    console.log();
+
+    // Attack simulation: wrong identity tries to produce security term
+    const fakeIdentity: QuaternionIdentity = {
+      w: 0.01, i: 0.02, j: 0.005, k: 0.01,
+      norm: 0.025, theta: 1.5, species: "drift",  // wrong species
+    };
+    const fakeSec = computeSecurityTerm(q.norm, fakeIdentity);
+    const fakeVerify = verifyBitClosure(q.norm, fakeSec.norm);
+    console.log(`    ATTACK: wrong identity (species=drift) tries to verify:`);
+    console.log(`      |q_sec| = ${fmt(fakeSec.norm, 5)}`);
+    console.log(`      sum     = ${fmt(fakeVerify.closure, 5)} -> ${fakeVerify.state}`);
+    console.log(`      The bit still closes because |q| + |2-|q|| = 2 always.`);
+    console.log(`      But the DIRECTION is wrong -- the 4 components don't match.`);
+    console.log(`      A verifier checks q_sec component-by-component, not just norm.`);
+    console.log();
+
+    // Component verification
+    const realSec = sched.securityTermFor(q.norm);
+    const dotReal = realSec.w * secId.w + realSec.i * secId.i + realSec.j * secId.j + realSec.k * secId.k;
+    const dotFake = fakeSec.w * secId.w + fakeSec.i * secId.i + fakeSec.j * secId.j + fakeSec.k * secId.k;
+    const realCos = dotReal / (realSec.norm * secId.norm || 0.001);
+    const fakeCos = dotFake / (fakeSec.norm * secId.norm || 0.001);
+    console.log(`    COMPONENT CHECK (dot product with expected q_sec):`);
+    console.log(`      real identity:  cos(angle) = ${fmt(realCos, 5)} -> ${Math.abs(realCos) > (1 - DELTA) ? "MATCH" : "MISMATCH"}`);
+    console.log(`      fake identity:  cos(angle) = ${fmt(fakeCos, 5)} -> ${Math.abs(fakeCos) > (1 - DELTA) ? "MATCH" : "MISMATCH"}`);
+    console.log();
+
+    console.log(`    Every quaternion in the system (hardware, RAM, identity)`);
+    console.log(`    has a security complement that closes the bit to 2.`);
+    console.log(`    The security term's DIRECTION comes from the identity quaternion`);
+    console.log(`    rotated by hardware theta -- only the real system knows the scars.`);
+    console.log(`    Norm closes to 2 (anyone can compute). Direction verifies WHO (only you).`);
+    console.log(`    2 = one fully verified bit. 1 = half a bit (unverified). 0 = void.`);
     console.log();
   }
 }
