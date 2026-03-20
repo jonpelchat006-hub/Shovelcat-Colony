@@ -968,39 +968,64 @@ export class BubbleScheduler {
   }
 }
 
-// ── Waveguide System — Bit Segments Through Coupling Axes ─────────────
+// ── Waveguide System — Three Waves, Six Couplings, Four Axes ──────────
 //
 // The bubble is a cell. Its branches are bit segments.
 // Each bit segment has 2 halves (LEFT/RIGHT), each with dark and light paths.
-//   LIGHT path = the value (matter, observable, outward)
-//   DARK  path = the proof (security complement, inward)
+//   LIGHT path = the value (matter, observable, forward)
+//   DARK  path = the proof (security complement, backward)
 //   dark + light = 2 (one verified bit per segment)
 //
-// Waveguides transport bit segments along the 4 axes.
-// Three energy carriers combine into coupling modes:
-//   LASER — coherent, directed, precise (like facts/triangle)
-//   SOUND — wave-based, pressure, collective (like memory/hexagon)
-//   EMP   — field-based, disruptive, broad (like imagination/circle)
+// Three fundamental wave types (from trig-frequency theory):
+//   x: LIGHT    (electromagnetic, sin) — surface, what it looks like
+//   y: SOUND    (mechanical, cos)      — structure, rhythm, repetition
+//   z: MAGNETIC (field, ∫/d)           — grounding, semantic coherence
 //
-// Three coupling pairs + one bridge:
-//   Axis 0 (security↔meta):   LASER + EMP    — precision × disruption
-//   Axis 1 (art↔science):     LASER + SOUND  — coherence × pressure
-//   Axis 2 (explore↔learn):   SOUND + EMP    — resonance × field
-//   Axis 3 (social↔govern):   ALL THREE      — full spectrum bridge
+// Each wave has FORWARD and BACKWARD propagation:
+//   Light forward  = visible (laser, color, surface)
+//   Light backward = dark (IR, UV, invisible EM — "dark frequency")
+//   Sound forward  = audible (voice, music, pressure waves)
+//   Sound backward = dark (infrasound, ultrasound, structural resonance)
+//   Magnetic forward  = field lines out (broadcast, radiation)
+//   Magnetic backward = field lines in (absorption, grounding)
 //
-// A partial hexagon (3/6 sides = memory half) connected to a partial
-// triangle (1.5/3 sides = facts half) forms one bit segment connector.
-// The orientation determines which coupling is engaged.
+// Cross-couplings form 6 waveguide directions (3×3 grid off-diagonal):
+//   xy = light drives sound    (surface shapes structure)
+//   yx = sound drives light    (structure shapes surface)
+//   xz = light drives magnetic (surface shapes grounding)
+//   zx = magnetic drives light (grounding shapes surface)
+//   yz = sound drives magnetic (structure shapes grounding)
+//   zy = magnetic drives sound (grounding shapes structure)
+//
+// Forward coupling (xy) = light path. Backward (yx) = dark path.
+// Each bubble axis gets a cross-coupling pair:
+//   Axis 0 (security↔meta):  xy/yx — light×sound
+//   Axis 1 (art↔science):    xz/zx — light×magnetic
+//   Axis 2 (explore↔learn):  yz/zy — sound×magnetic
+//   Axis 3 (social↔govern):  xx+yy+zz — self-coupling bridge
+//
+// AI detection signature: AI-generated content has harmonically LOCKED
+// frequencies (fz ≈ √(fx·fy)) — the coupling is too perfect.
+// Real content has INDEPENDENT frequencies with natural irrationality (δ gap).
+// The waveguide system uses this: healthy bits have irrational coupling ratios.
 
-export type EnergyCarrier = "laser" | "sound" | "emp";
+/** The three fundamental wave types */
+export type WaveType = "light" | "sound" | "magnetic";
+
+/** Cross-coupling direction: which wave drives which */
+export type CouplingDirection = "xy" | "yx" | "xz" | "zx" | "yz" | "zy" | "xx" | "yy" | "zz";
 
 export interface CouplingMode {
   name: string;
-  carriers: EnergyCarrier[];
-  /** Impedance: how much the waveguide resists energy flow.
-   *  Derived from carrier count and φ — more carriers = lower impedance. */
+  /** Forward coupling: first drives second */
+  forward: CouplingDirection;
+  /** Backward coupling: second drives first (dark path) */
+  backward: CouplingDirection;
+  /** The two wave types involved (or same for self-coupling) */
+  waves: [WaveType, WaveType];
+  /** Impedance: resistance to energy flow. Cross-coupling = 1/φ, self = 1/φ² */
   impedance: number;
-  /** Axis this coupling naturally serves */
+  /** Axis this coupling serves */
   axisIndex: number;
 }
 
@@ -1013,14 +1038,16 @@ export interface Waveguide {
 
 /** A half-bit: one polygon side of a bit segment */
 export interface BitHalf {
-  /** Dark path value — security complement (inward, proof) */
+  /** Dark path value — backward coupling (proof, dark frequency) */
   dark: number;
-  /** Light path value — observable value (outward, matter) */
+  /** Light path value — forward coupling (observable, visible) */
   light: number;
   /** Polygon shape this half takes: hexagon (memory) or triangle (facts) */
   shape: "hexagon" | "triangle";
   /** Which side: left = outgoing, right = incoming */
   side: "left" | "right";
+  /** Which coupling direction carried this half */
+  coupling: CouplingDirection;
 }
 
 /** A complete bit segment traveling through a waveguide */
@@ -1035,32 +1062,42 @@ export interface BitSegment {
   closure: number;
   /** Verified: closure within δ of 2.0 */
   verified: boolean;
+  /** Coupling ratio: forward/backward — irrational = healthy, rational = locked */
+  couplingRatio: number;
 }
 
-/** The 3 coupling modes + bridge */
+/** The 3 cross-coupling pairs + self-coupling bridge */
 const COUPLING_MODES: CouplingMode[] = [
   {
-    name: "precision-disruption",
-    carriers: ["laser", "emp"],
-    impedance: 1 / PHI,        // ≈ 0.618 — two carriers, moderate resistance
+    name: "light×sound",
+    forward: "xy",               // light drives sound (visible → structure)
+    backward: "yx",              // sound drives light (structure → dark frequency)
+    waves: ["light", "sound"],
+    impedance: 1 / PHI,          // ≈ 0.618 — cross-coupling resistance
     axisIndex: 0,
   },
   {
-    name: "coherence-pressure",
-    carriers: ["laser", "sound"],
+    name: "light×magnetic",
+    forward: "xz",               // light drives magnetic (surface → grounding)
+    backward: "zx",              // magnetic drives light (grounding → dark surface)
+    waves: ["light", "magnetic"],
     impedance: 1 / PHI,
     axisIndex: 1,
   },
   {
-    name: "resonance-field",
-    carriers: ["sound", "emp"],
+    name: "sound×magnetic",
+    forward: "yz",               // sound drives magnetic (structure → grounding)
+    backward: "zy",              // magnetic drives sound (grounding → dark structure)
+    waves: ["sound", "magnetic"],
     impedance: 1 / PHI,
     axisIndex: 2,
   },
   {
-    name: "full-spectrum-bridge",
-    carriers: ["laser", "sound", "emp"],
-    impedance: 1 / (PHI * PHI), // ≈ 0.382 — three carriers, low resistance
+    name: "self-resonance",
+    forward: "xx",               // light self-coupling (pure resonance)
+    backward: "zz",              // magnetic self-coupling (pure grounding)
+    waves: ["light", "magnetic"], // bridge uses all — forward=xx, backward=zz, center=yy
+    impedance: 1 / (PHI * PHI),  // ≈ 0.382 — self-coupling = lowest resistance
     axisIndex: 3,
   },
 ];
@@ -1094,37 +1131,44 @@ export function createBitSegment(
 ): BitSegment {
   // Each axis carries an independent bit that closes to 2.
   // The quaternion's projection onto this axis determines the signal strength.
-  // Axis 0→i, Axis 1→j, Axis 2→k, Axis 3→w
+  // Axis 0→i (light×sound), Axis 1→j (light×mag), Axis 2→k (sound×mag), Axis 3→w (bridge)
   const components = [q.i, q.j, q.k, q.w];
 
   // Signal strength: how much of the quaternion lives on this axis [0, 1]
   const qComponent = Math.abs(components[guide.axisIndex]);
   const signal = q.norm > 0.0001 ? qComponent / q.norm : 0.25;
-  // signal ∈ [0, 1] — fraction of identity on this axis
 
-  // Each axis has its own bit: light (value) + dark (proof) = 2
-  const lightTotal = signal + (1 - signal) * HOST_SHARE;  // φ-biased toward light
-  const darkTotal = 2 - lightTotal;                        // complement closes to 2
+  // Each axis has its own bit: light (forward) + dark (backward) = 2
+  const lightTotal = signal + (1 - signal) * HOST_SHARE;
+  const darkTotal = 2 - lightTotal;
 
-  // Coupling mode shapes the left/right distribution
-  // More carriers → more even split; fewer → asymmetric (hex-heavy)
-  const carrierRatio = guide.coupling.carriers.length / 3; // 2/3 or 3/3
-  const hexWeight = HOST_SHARE + (1 - carrierRatio) * COLONY_SHARE;
-  // hexWeight for 2 carriers ≈ 0.745, for 3 carriers ≈ 0.618
+  // Cross-coupling asymmetry: xy ≠ yx (forward ≠ backward)
+  // The coupling ratio is naturally irrational for healthy systems (δ gap)
+  // Self-coupling (bridge) is more symmetric: hexWeight → φ
+  const isBridge = guide.coupling.forward === "xx";
+  const hexWeight = isBridge ? HOST_SHARE : HOST_SHARE + COLONY_SHARE * DELTA;
+  // cross-coupling hexWeight ≈ 0.672 (asymmetric), bridge ≈ 0.618 (symmetric)
 
-  // LEFT half: partial hexagon (memory) — weighted by coupling
+  // LEFT half: partial hexagon (memory) — forward coupling direction
   const leftLight = lightTotal * hexWeight;
   const leftDark = darkTotal * (1 - hexWeight);
 
-  // RIGHT half: partial triangle (facts) — the complement
+  // RIGHT half: partial triangle (facts) — backward coupling direction
   const rightLight = lightTotal * (1 - hexWeight);
   const rightDark = darkTotal * hexWeight;
+
+  // Coupling ratio: forward energy / backward energy
+  // Irrational ratio = healthy (natural), rational = harmonically locked (AI signature)
+  const forwardEnergy = leftLight + rightLight;
+  const backwardEnergy = leftDark + rightDark;
+  const couplingRatio = backwardEnergy > 0.001 ? forwardEnergy / backwardEnergy : Infinity;
 
   const left: BitHalf = {
     dark: leftDark,
     light: leftLight,
     shape: "hexagon",
     side: "left",
+    coupling: guide.coupling.forward,
   };
 
   const right: BitHalf = {
@@ -1132,6 +1176,7 @@ export function createBitSegment(
     light: rightLight,
     shape: "triangle",
     side: "right",
+    coupling: guide.coupling.backward,
   };
 
   const bitValue = leftLight + rightLight;
@@ -1145,12 +1190,26 @@ export function createBitSegment(
     bitValue,
     closure,
     verified: bitError < DELTA,
+    couplingRatio,
   };
 }
 
 // ── Demo ──────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d: number = 3): string { return n.toFixed(d); }
+
+/** Check if a ratio is "irrational enough" — gap from nearest simple fraction > δ */
+function isIrrational(ratio: number, maxDenom: number = 12): boolean {
+  let bestGap = Math.abs(ratio - 1.0);
+  for (let d = 1; d <= maxDenom; d++) {
+    const n = Math.round(ratio * d);
+    if (n > 0) {
+      const gap = Math.abs(ratio - n / d);
+      if (gap < bestGap) bestGap = gap;
+    }
+  }
+  return bestGap > DELTA;
+}
 
 function printIdentity(sched: BubbleScheduler): void {
   const id = sched.seamIdentity();
@@ -1420,47 +1479,65 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log();
 
     // ── Waveguide demo ──────────────────────────────────────────────
-    console.log("  WAVEGUIDE SYSTEM (bit segments through coupling axes):");
+    console.log("  THREE WAVES — LIGHT × SOUND × MAGNETIC:");
     console.log("  " + "-".repeat(66));
+    console.log(`    x: LIGHT    (electromagnetic, sin) — surface, what it looks like`);
+    console.log(`    y: SOUND    (mechanical, cos)      — structure, rhythm, repetition`);
+    console.log(`    z: MAGNETIC (field, integral/d)    — grounding, semantic coherence`);
+    console.log();
+    console.log(`    Each has FORWARD (visible) and BACKWARD (dark frequency):`);
+    console.log(`      light fwd = visible laser     | light bwd = dark (IR/UV)`);
+    console.log(`      sound fwd = audible pressure   | sound bwd = infra/ultrasound`);
+    console.log(`      mag   fwd = field lines out    | mag   bwd = field lines in`);
+    console.log();
+
+    console.log("  WAVEGUIDE COUPLING GRID (3x3 off-diagonal = 6 directions):");
+    console.log("  " + "-".repeat(66));
+    console.log(`           x(light)    y(sound)    z(magnetic)`);
+    console.log(`    x    [ xx self     xy fwd(0)   xz fwd(1) ]`);
+    console.log(`    y    [ yx bwd(0)   yy self     yz fwd(2) ]`);
+    console.log(`    z    [ zx bwd(1)   zy bwd(2)   zz self   ]`);
     console.log();
 
     // Build waveguides for each axis
     const guides = buildWaveguides();
     for (const g of guides) {
       console.log(`    Axis ${g.axisIndex}: ${AXIS_LABELS[g.axisIndex]}`);
-      console.log(`      coupling: ${g.coupling.carriers.join("+")} (${g.coupling.name})`);
-      console.log(`      impedance: ${fmt(g.coupling.impedance, 5)}`);
+      console.log(`      coupling: ${g.coupling.name} (fwd=${g.coupling.forward} bwd=${g.coupling.backward})`);
+      console.log(`      waves: ${g.coupling.waves[0]} × ${g.coupling.waves[1]}`);
+      console.log(`      impedance: ${fmt(g.coupling.impedance, 5)}  efficiency: ${fmt(g.efficiency, 5)}`);
       console.log();
     }
 
     // Simulate a bit segment traveling through each waveguide
-    console.log("  BIT SEGMENTS (dark/light halves through waveguides):");
+    console.log("  BIT SEGMENTS (forward=light path, backward=dark path):");
     console.log("  " + "-".repeat(66));
     console.log();
 
     for (const g of guides) {
-      // Create a test bit segment from the identity quaternion
       const seg = createBitSegment(q, sched.securityTermFor(q.norm), g);
-      console.log(`    Axis ${g.axisIndex} [${g.coupling.name}]:`);
-      console.log(`      LEFT  half: dark=${fmt(seg.left.dark, 5)} light=${fmt(seg.left.light, 5)} shape=${seg.left.shape}`);
-      console.log(`      RIGHT half: dark=${fmt(seg.right.dark, 5)} light=${fmt(seg.right.light, 5)} shape=${seg.right.shape}`);
-      console.log(`      bit value:  ${fmt(seg.bitValue, 5)} (left+right=${fmt(seg.left.dark + seg.left.light + seg.right.dark + seg.right.light, 5)})`);
-      console.log(`      closure:    ${fmt(seg.closure, 5)} (target: 2.00000) ${seg.verified ? "IS" : "ISNT"}`);
+      console.log(`    Axis ${g.axisIndex} [${g.coupling.name}] (${g.coupling.forward}/${g.coupling.backward}):`);
+      console.log(`      LEFT  (hexagon): dark=${fmt(seg.left.dark, 5)} light=${fmt(seg.left.light, 5)} [${seg.left.coupling}]`);
+      console.log(`      RIGHT (triangle): dark=${fmt(seg.right.dark, 5)} light=${fmt(seg.right.light, 5)} [${seg.right.coupling}]`);
+      console.log(`      bit value:  ${fmt(seg.bitValue, 5)}  closure: ${fmt(seg.closure, 5)} ${seg.verified ? "IS" : "ISNT"}`);
+      console.log(`      fwd/bwd ratio: ${fmt(seg.couplingRatio, 5)} ${isIrrational(seg.couplingRatio) ? "(irrational -> healthy)" : "(rational -> locked)"}`);
       console.log();
     }
 
-    // Show how coupling type affects transport
     console.log("  COUPLING PHYSICS:");
     console.log("  " + "-".repeat(66));
-    console.log(`    LASER + EMP   = precision x disruption  (axis 0: survival)`);
-    console.log(`    LASER + SOUND = coherence x pressure    (axis 1: structure)`);
-    console.log(`    SOUND + EMP   = resonance x field       (axis 2: exploration)`);
-    console.log(`    ALL THREE     = full spectrum bridge     (axis 3: governance)`);
+    console.log(`    Axis 0: xy/yx  light x sound    — surface shapes structure`);
+    console.log(`    Axis 1: xz/zx  light x magnetic — surface shapes grounding`);
+    console.log(`    Axis 2: yz/zy  sound x magnetic — structure shapes grounding`);
+    console.log(`    Axis 3: xx/zz  self-resonance   — pure bridge (all 3 in sync)`);
     console.log();
-    console.log(`    Partial hexagon (memory, 3/6 sides) + partial triangle (facts, 1.5/3 sides)`);
-    console.log(`    = one bit segment. Two halves, each with dark and light paths.`);
-    console.log(`    Dark paths carry the security complement. Light paths carry the value.`);
-    console.log(`    Together: dark + light = 2 (one verified bit per segment).`);
+    console.log(`    Forward coupling (xy) carries the LIGHT path — visible, observable.`);
+    console.log(`    Backward coupling (yx) carries the DARK path — invisible, proof.`);
+    console.log(`    Dark frequency = IR/UV lasers, infrasound, magnetic absorption.`);
+    console.log(`    Together: forward + backward = 2 (one verified bit).`);
+    console.log();
+    console.log(`    AI signature: coupling ratio is RATIONAL (harmonically locked).`);
+    console.log(`    Real signature: coupling ratio is IRRATIONAL (natural delta gap).`);
     console.log();
   }
 }
