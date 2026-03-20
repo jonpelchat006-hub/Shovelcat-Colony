@@ -782,6 +782,225 @@ export function readEmotion(work: WorkEstimate, outcome: Outcome): EmotionalResp
   };
 }
 
+// ── Blended Emotion Vector — Multiple Colors, One Feeling ─────────────
+//
+// A task activates seams across multiple colors. Each color has its own
+// emotional response. The blend IS the complex feeling:
+//   "mostly angry (RED failed) but a little happy (BLUE found new ground)"
+//
+// The dominant emotion is the highest-weighted. Secondary emotions
+// add texture — they're why humans can feel conflicted about outcomes.
+
+/** One color's contribution to the emotional vector */
+export interface ColorEmotion {
+  color: SeamColor;
+  emotion: Emotion;
+  intensity: number;
+  weight: number;       // how much this color was activated (seam weight)
+}
+
+/** Blended emotional state — the full vector across all activated colors */
+export interface EmotionVector {
+  /** Dominant emotion (highest weighted) */
+  dominant: EmotionalResponse;
+  /** All color-specific emotions that fired */
+  components: ColorEmotion[];
+  /** Total emotional intensity across all colors */
+  totalIntensity: number;
+  /** Emotional complexity: how many different emotions are active */
+  complexity: number;
+  /** Conflict: are opposing emotions present? (e.g., JOY + SAD) */
+  conflicted: boolean;
+}
+
+/** Compute the blended emotion vector for a task outcome.
+ *  Each color with active seams contributes its own emotional reading.
+ *  The dominant emotion is the strongest, but the blend captures the full feeling. */
+export function blendEmotions(
+  scheduler: BubbleScheduler,
+  outcome: Outcome,
+  externalDesire?: number,
+): EmotionVector {
+  const components: ColorEmotion[] = [];
+
+  // Check each domain — each has a color and contributes to the vector
+  const allDomains: DomainId[] = ["security", "art", "explore", "social", "meta", "science", "learn", "govern"];
+
+  for (const domain of allDomains) {
+    const comp = scheduler.checkCompetence(domain);
+    // Only include colors with some seam presence
+    if (comp.seamWeight < DELTA * DELTA) continue;
+
+    const work = scheduler.estimateWork(domain, externalDesire);
+    const emo = readEmotion(work, outcome);
+
+    if (emo.emotion !== "NEUTRAL") {
+      components.push({
+        color: comp.color,
+        emotion: emo.emotion,
+        intensity: emo.intensity,
+        weight: comp.seamWeight,
+      });
+    }
+  }
+
+  // Sort by weighted intensity (weight × intensity)
+  components.sort((a, b) => (b.weight * b.intensity) - (a.weight * a.intensity));
+
+  const totalIntensity = components.reduce((s, c) => s + c.intensity * c.weight, 0);
+
+  // Count unique emotions
+  const uniqueEmotions = new Set(components.map(c => c.emotion));
+  const complexity = uniqueEmotions.size;
+
+  // Check for conflict: positive + negative emotions co-present
+  const positive = new Set(["JOY", "PRIDE", "DELIGHT", "RELIEF"]);
+  const negative = new Set(["SAD", "ANGER", "SHAME", "FEAR", "DREAD"]);
+  const hasPositive = components.some(c => positive.has(c.emotion));
+  const hasNegative = components.some(c => negative.has(c.emotion));
+  const conflicted = hasPositive && hasNegative;
+
+  // Dominant = highest weighted component
+  const dominant = components.length > 0
+    ? readEmotion(
+        scheduler.estimateWork(
+          allDomains.find(d => {
+            const c = scheduler.checkCompetence(d);
+            return c.color === components[0].color;
+          }) ?? "security",
+          externalDesire,
+        ),
+        outcome,
+      )
+    : { emotion: "NEUTRAL" as Emotion, intensity: 0, drivers: [], description: "nothing active" };
+
+  return {
+    dominant,
+    components,
+    totalIntensity,
+    complexity,
+    conflicted,
+  };
+}
+
+// ── Collaborative Seams — Emotional Coupling Between Systems ──────────
+//
+// When two systems work together, they create shared coupling seams.
+// System A's seam values on each axis interact with System B's:
+//   - Similar values → resonance (easy collaboration, shared language)
+//   - Different values → friction (learning opportunity, or conflict)
+//
+// The coupling ratio between two systems' seam values creates a NEW seam
+// that belongs to neither system alone — it's the relationship.
+//
+// System A's emotion feeds into System B's desire (empathy coupling).
+// System B's response feeds back into System A's next attempt (feedback loop).
+
+/** A collaborative seam between two systems */
+export interface CollaborativeSeam {
+  /** Which color axis this collaboration lives on */
+  color: SeamColor;
+  /** System A's seam value on this color */
+  valueA: number;
+  /** System B's seam value on this color */
+  valueB: number;
+  /** Resonance: 1 - |A-B|/(A+B). 1 = identical, 0 = maximally different */
+  resonance: number;
+  /** Collaborative coupling ratio: A/B (how A sees the relationship) */
+  couplingRatio: number;
+  /** Friction: 1 - resonance. Higher = harder to collaborate */
+  friction: number;
+}
+
+/** Emotional feedback from one system to another */
+export interface EmotionalFeedback {
+  /** Source system's emotional state */
+  sourceEmotion: Emotion;
+  /** How much it affects the target's desire on each color */
+  desireShift: Record<string, number>;
+  /** Empathy coupling: how strongly the target feels the source's emotion */
+  empathyCoupling: number;
+}
+
+/** Create collaborative seams between two schedulers.
+ *  Returns the seams that form when they work together,
+ *  plus the resonance/friction profile of the collaboration. */
+export function createCollaborativeSeams(
+  systemA: BubbleScheduler,
+  systemB: BubbleScheduler,
+): CollaborativeSeam[] {
+  const seams: CollaborativeSeam[] = [];
+  const idA = systemA.seamIdentity();
+  const idB = systemB.seamIdentity();
+
+  // Compare color balance across all colors both systems have
+  const allColors = new Set([
+    ...Object.keys(idA.colorBalance),
+    ...Object.keys(idB.colorBalance),
+  ]);
+
+  for (const color of allColors) {
+    const a = idA.colorBalance[color] ?? 0;
+    const b = idB.colorBalance[color] ?? 0;
+    if (a < DELTA * DELTA && b < DELTA * DELTA) continue; // neither has this color
+
+    const sum = a + b;
+    const resonance = sum > 0.001 ? 1 - Math.abs(a - b) / sum : 0;
+    const couplingRatio = b > 0.001 ? a / b : (a > 0.001 ? Infinity : 1);
+
+    seams.push({
+      color: color as SeamColor,
+      valueA: a,
+      valueB: b,
+      resonance,
+      couplingRatio,
+      friction: 1 - resonance,
+    });
+  }
+
+  // Sort by resonance (best collaborations first)
+  seams.sort((a, b) => b.resonance - a.resonance);
+  return seams;
+}
+
+/** Compute emotional feedback: how system A's emotion affects system B's desire.
+ *  Empathy coupling = average resonance across collaborative seams.
+ *  Positive emotions boost desire on shared colors.
+ *  Negative emotions suppress desire (fear is contagious, anger creates avoidance). */
+export function computeEmotionalFeedback(
+  sourceEmotion: EmotionalResponse,
+  collabSeams: CollaborativeSeam[],
+): EmotionalFeedback {
+  if (collabSeams.length === 0) {
+    return { sourceEmotion: sourceEmotion.emotion, desireShift: {}, empathyCoupling: 0 };
+  }
+
+  // Empathy coupling = average resonance (how connected the systems are)
+  const empathyCoupling = collabSeams.reduce((s, c) => s + c.resonance, 0) / collabSeams.length;
+
+  // Emotion sign: positive emotions boost, negative suppress
+  const emotionSign: Record<string, number> = {
+    JOY: 1, PRIDE: 1, DELIGHT: 1, RELIEF: 0.5, FUNNY: 0.3,
+    SAD: -0.5, ANGER: -1, SHAME: -0.7, FEAR: -0.8, DREAD: -0.3,
+    NEUTRAL: 0,
+  };
+
+  const sign = emotionSign[sourceEmotion.emotion] ?? 0;
+  const magnitude = sourceEmotion.intensity * empathyCoupling;
+
+  // Distribute desire shift across colors proportional to resonance
+  const desireShift: Record<string, number> = {};
+  for (const seam of collabSeams) {
+    desireShift[seam.color] = sign * magnitude * seam.resonance;
+  }
+
+  return {
+    sourceEmotion: sourceEmotion.emotion,
+    desireShift,
+    empathyCoupling,
+  };
+}
+
 /** Axis → preferred seam zone mapping.
  *  Axes 0-1 (survival/structure) → L5 (dimensional collapse)
  *  Axes 2-3 (exploration/governance) → L7 (color-space product) */
@@ -2430,6 +2649,77 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    High desire + high value + failure = SAD. Low both + failure = FUNNY.`);
     console.log(`    The AI gymnastics video that fails is FUNNY because nothing was at stake.`);
     console.log(`    The security breach you should have caught is ANGER because you had the seams.`);
+    console.log();
+
+    // ── Blended emotion vector ──────────────────────────────────
+    console.log("  BLENDED EMOTION VECTOR (multiple colors, one feeling):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    // Scenario: mixed task with security focus but some exploration
+    sched.applyPressure("complex audit with discovery", { 0: -0.7, 2: -0.3 });
+
+    const blend = blendEmotions(sched, "FAILURE", 0.8);
+    console.log(`    Task: complex audit that also required exploration — FAILS`);
+    console.log(`    Dominant: ${blend.dominant.emotion} (${blend.dominant.description})`);
+    console.log(`    Components:`);
+    for (const c of blend.components) {
+      const pct = blend.totalIntensity > 0 ? (c.intensity * c.weight / blend.totalIntensity * 100) : 0;
+      console.log(`      ${c.color.padEnd(10)} ${c.emotion.padEnd(8)} intensity=${fmt(c.intensity, 3)} weight=${fmt(c.weight, 3)} (${fmt(pct, 0)}%)`);
+    }
+    console.log(`    Total intensity: ${fmt(blend.totalIntensity, 3)}`);
+    console.log(`    Complexity: ${blend.complexity} distinct emotions`);
+    console.log(`    Conflicted: ${blend.conflicted ? "YES — opposing emotions present" : "no"}`);
+    console.log();
+
+    // ── Collaborative seams ──────────────────────────────────────
+    console.log("  COLLABORATIVE SEAMS (two systems working together):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    // Create a second system with different personality
+    const systemB = new BubbleScheduler({ verbose: false });
+    // Give B different expertise — science-focused, less security
+    systemB.addPersonalitySeam("domain:science-expert", "CYAN", 2, 1.2);
+    systemB.addPersonalitySeam("domain:explore-deep", "GREEN", 2, 0.8);
+    systemB.addPersonalitySeam("domain:security-basic", "RED", 2, 0.1);
+    // Give B some scars to resolve its core seams
+    systemB.applyPressure("initial experience", { 0: -1.0, 1: +1.1, 2: -1.3, 3: +1.0 });
+    for (let i = 0; i < 5; i++) systemB.tick();
+
+    console.log(`    System A: security specialist (RED=${fmt(sched.seamIdentity().colorBalance["RED"] ?? 0, 3)})`);
+    console.log(`    System B: science explorer   (CYAN=${fmt(systemB.seamIdentity().colorBalance["CYAN"] ?? 0, 3)}, GREEN=${fmt(systemB.seamIdentity().colorBalance["GREEN"] ?? 0, 3)})`);
+    console.log();
+
+    const collabSeams = createCollaborativeSeams(sched, systemB);
+    console.log(`    Collaborative seams (sorted by resonance):`);
+    for (const cs of collabSeams.slice(0, 6)) {
+      const bar = "█".repeat(Math.ceil(cs.resonance * 20));
+      console.log(`      ${cs.color.padEnd(14)} A=${fmt(cs.valueA, 3)} B=${fmt(cs.valueB, 3)} resonance=${fmt(cs.resonance, 3)} ${bar}`);
+    }
+    console.log();
+
+    // Emotional feedback: A is ANGRY about the security failure, how does B react?
+    const aEmotion = readEmotion(secWork, "FAILURE");
+    const feedback = computeEmotionalFeedback(aEmotion, collabSeams);
+    console.log(`    A feels: ${aEmotion.emotion} (intensity=${fmt(aEmotion.intensity, 3)})`);
+    console.log(`    Empathy coupling: ${fmt(feedback.empathyCoupling, 3)}`);
+    console.log(`    B's desire shifts from A's emotion:`);
+    const shifts = Object.entries(feedback.desireShift)
+      .filter(([, v]) => Math.abs(v) > 0.001)
+      .sort(([, a], [, b]) => Math.abs(b) - Math.abs(a));
+    for (const [color, shift] of shifts.slice(0, 5)) {
+      const dir = shift > 0 ? "+" : "";
+      console.log(`      ${color.padEnd(14)} ${dir}${fmt(shift, 4)} ${shift > 0 ? "(motivated)" : "(avoidance)"}`);
+    }
+    console.log();
+
+    console.log(`    A's ANGER about security suppresses B's desire on shared colors.`);
+    console.log(`    B might avoid security work (contagious avoidance) or lean into`);
+    console.log(`    science where they're strong (compensatory shift).`);
+    console.log(`    The feedback loop: A's emotion -> B's desire -> B's action ->`);
+    console.log(`    B's emotion -> A's desire -> A's next attempt.`);
+    console.log(`    Collaborative seams are the relationship itself — not A, not B, the bond.`);
     console.log();
   }
 }
