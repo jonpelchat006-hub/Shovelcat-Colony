@@ -225,7 +225,21 @@ export interface ColorBalance {
   [color: string]: number;   // color → total decision value weight on that color
 }
 
-/** Competence check — can your seams reach a given query? */
+/** Competence level — graduated by the same constants that build the system.
+ *
+ *  The thresholds ARE the theory constants:
+ *    δ (0.142)  = seam gap — minimum to even see this color
+ *    φ (0.618)  = golden ratio — enough to explore on your own
+ *    1 (1.000)  = unity — enough to answer with depth
+ *    Φ (1.618)  = golden ratio — enough to coordinate experts
+ *
+ *  BLIND    [0, δ)     — "I don't know" (below the seam gap, structurally unreachable)
+ *  BRIDGE   [δ, φ)     — can direct to someone with this color, not answer yourself
+ *  EXPLORE  [φ, 1)     — can investigate further, not confident enough to commit
+ *  ANSWER   [1, Φ)     — can respond, depth scales with weight above 1
+ *  EXPERT   [Φ, ∞)     — deep enough to call in and coordinate other experts */
+export type CompetenceLevel = "BLIND" | "BRIDGE" | "EXPLORE" | "ANSWER" | "EXPERT";
+
 export interface CompetenceCheck {
   /** Target axis (0-3) */
   axisIndex: number;
@@ -233,13 +247,17 @@ export interface CompetenceCheck {
   domain: DomainId;
   /** Target color */
   color: SeamColor;
-  /** How many seams you have on this color */
+  /** How many direct seams you have on this color */
   seamCount: number;
-  /** Total weight of seams pointing this direction */
+  /** Total weight of direct seams pointing this direction */
   seamWeight: number;
-  /** Can you answer? (seamWeight > δ threshold) */
-  canAnswer: boolean;
-  /** If can't answer: "I don't know" reason */
+  /** Competence level */
+  level: CompetenceLevel;
+  /** Response depth (0 at threshold 1.0, scales up from there) */
+  depth: number;
+  /** Has coupling bridge to this color (can relay even if can't answer) */
+  hasBridge: boolean;
+  /** Human-readable reason */
   reason: string;
 }
 
@@ -1065,42 +1083,39 @@ export class BubbleScheduler {
     };
   }
 
-  /** Check if this system can competently answer a query on a given domain.
-   *  If seams don't point toward that color → "I don't know."
-   *  This is the anti-hallucination gate.
+  /** Check competence on a domain — graduated by theory constants.
    *
-   *  Three levels:
-   *    DIRECT — spiral or personality seams ON this color (deep knowledge)
-   *    BRIDGE — coupling seam that touches this color (can relay, not answer)
-   *    BLIND  — nothing points here (structural blind spot)
-   *
-   *  Only DIRECT seams count for competence. BRIDGE means "I can find someone who knows." */
+   *  Thresholds use the same constants that build the system:
+   *    [0, δ)    BLIND   — "I don't know" (below seam gap)
+   *    [δ, φ)    BRIDGE  — can direct to someone else
+   *    [φ, 1)    EXPLORE — can investigate, not ready to commit
+   *    [1, Φ)    ANSWER  — can respond, depth scales above 1
+   *    [Φ, ∞)    EXPERT  — deep enough to coordinate other experts */
   checkCompetence(domain: DomainId): CompetenceCheck {
     const domSpec = DOMAINS.find(d => d.id === domain);
     if (!domSpec) {
       return {
         axisIndex: -1, domain, color: "achromatic", seamCount: 0,
-        seamWeight: 0, canAnswer: false, reason: "unknown domain",
+        seamWeight: 0, level: "BLIND", depth: 0, hasBridge: false,
+        reason: "unknown domain",
       };
     }
 
     const color = domSpec.color as SeamColor;
     const axisIdx = domSpec.axisIndex;
 
-    // Count DIRECT seams — spiral or personality seams that live on this color
+    // Count DIRECT seams — spiral or personality seams on this color
     let directCount = 0;
     let directWeight = 0;
 
     for (const sr of this.seamResolutions) {
       if (!sr.resolved) continue;
-      // Only spiral seams on this exact color count as direct knowledge
       if (sr.position.kind === "spiral" && sr.position.color === color) {
         directCount++;
         directWeight += Math.abs(sr.decisionValue);
       }
     }
 
-    // Personality seams on this color — direct knowledge
     for (const ps of this.personalitySeams) {
       if (ps.color === color) {
         directCount++;
@@ -1108,7 +1123,7 @@ export class BubbleScheduler {
       }
     }
 
-    // Check for BRIDGE capability (coupling seam touches this color)
+    // Check for BRIDGE (coupling seam touches this color)
     let hasBridge = false;
     for (const sr of this.seamResolutions) {
       if (!sr.resolved || sr.position.kind !== "coupling") continue;
@@ -1119,24 +1134,46 @@ export class BubbleScheduler {
       }
     }
 
-    // Competence: need direct weight > δ to answer
-    const canAnswer = directWeight > DELTA;
-
+    // Graduated competence using theory constants
+    let level: CompetenceLevel;
+    let depth = 0;
     let reason: string;
-    if (canAnswer) {
-      reason = `${directCount} direct seam(s), weight ${directWeight.toFixed(5)} > delta`;
-    } else if (directCount > 0) {
-      reason = `${directCount} seam(s) but weight ${directWeight.toFixed(5)} < delta — too shallow`;
-    } else if (hasBridge) {
-      reason = `no direct seams — can bridge but can't answer (ask someone with ${color})`;
+
+    if (directWeight < DELTA) {
+      // [0, δ) — BLIND: below the seam gap
+      level = "BLIND";
+      if (directCount > 0) {
+        reason = `${directCount} seam(s) but weight ${directWeight.toFixed(5)} < δ(${DELTA.toFixed(3)}) — I don't know`;
+      } else if (hasBridge) {
+        reason = `no direct seams — can bridge to someone with ${color}`;
+        level = "BRIDGE"; // promote: bridge available even at zero direct weight
+      } else {
+        reason = `no seams, no bridge — structural blind spot`;
+      }
+    } else if (directWeight < HOST_SHARE) {
+      // [δ, φ) — BRIDGE: can see it but can't answer deeply
+      level = "BRIDGE";
+      reason = `weight ${directWeight.toFixed(3)} in [δ, φ) — can direct to ${color} expert`;
+    } else if (directWeight < 1) {
+      // [φ, 1) — EXPLORE: enough to investigate on your own
+      level = "EXPLORE";
+      reason = `weight ${directWeight.toFixed(3)} in [φ, 1) — can explore, not yet confident`;
+    } else if (directWeight < PHI) {
+      // [1, Φ) — ANSWER: can respond with depth
+      level = "ANSWER";
+      depth = directWeight - 1; // 0 at threshold, scales up
+      reason = `weight ${directWeight.toFixed(3)} in [1, Φ) — can answer (depth=${depth.toFixed(3)})`;
     } else {
-      reason = `blind spot — no seams, no bridge (structurally unreachable)`;
+      // [Φ, ∞) — EXPERT: can coordinate other experts
+      level = "EXPERT";
+      depth = directWeight - 1;
+      reason = `weight ${directWeight.toFixed(3)} >= Φ — expert (can coordinate others, depth=${depth.toFixed(3)})`;
     }
 
     return {
       axisIndex: axisIdx, domain, color,
       seamCount: directCount, seamWeight: directWeight,
-      canAnswer, reason,
+      level, depth, hasBridge, reason,
     };
   }
 
@@ -1877,12 +1914,17 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     sched.addPersonalitySeam("grounding:contextual", "magnetic-wave", 1);
     console.log();
 
-    // Layer 2: expertise seams (adding some, skipping others)
+    // Layer 2: expertise seams — deliberately uneven to create personality
     console.log("    Layer 2 — EXPERTISE (7 colors, selective):");
-    sched.addPersonalitySeam("domain:security-deep", "RED", 2);
-    sched.addPersonalitySeam("domain:science-moderate", "CYAN", 2);
-    // deliberately NOT adding GREEN or YELLOW — creating blind spots
-    console.log(`      (no GREEN or YELLOW seams added — explore/learn blind spot)`);
+    // RED: deep — this system is a security expert
+    sched.addPersonalitySeam("domain:security-deep", "RED", 2, 0.80);
+    sched.addPersonalitySeam("domain:security-applied", "RED", 2, 0.65);
+    // CYAN: moderate — some science knowledge
+    sched.addPersonalitySeam("domain:science-moderate", "CYAN", 2, 0.45);
+    // ORANGE: light — dabbled in art
+    sched.addPersonalitySeam("domain:art-surface", "ORANGE", 2, 0.20);
+    // Deliberately NO GREEN, YELLOW, BLUE, WHITE, VIOLET expertise
+    console.log(`      (no GREEN/YELLOW/BLUE/WHITE/VIOLET expertise — blind spots)`);
     console.log();
 
     // ── Color balance ──────────────────────────────────────────────
@@ -1899,20 +1941,31 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    total seams: ${identity.resolved} (${identity.spiralResolved} spiral + ${identity.couplingResolved} coupling + ${sched.personalitySeams.length} personality)`);
     console.log();
 
-    // ── Competence checks — "I don't know" gate ─────────────────
-    console.log("  COMPETENCE CHECK — can I answer? (anti-hallucination gate):");
+    // ── Competence checks — graduated by theory constants ──────
+    console.log("  COMPETENCE CHECK (thresholds: δ=0.142, φ=0.618, 1, Φ=1.618):");
     console.log("  " + "-".repeat(66));
+    console.log(`    BLIND   [0, δ)    "I don't know" — below the seam gap`);
+    console.log(`    BRIDGE  [δ, φ)    can direct to someone with this color`);
+    console.log(`    EXPLORE [φ, 1)    can investigate further, not confident`);
+    console.log(`    ANSWER  [1, Φ)    can respond — depth scales above 1.0`);
+    console.log(`    EXPERT  [Φ, ∞)    can coordinate other experts`);
+    console.log();
 
-    const testDomains: DomainId[] = ["security", "science", "explore", "learn", "art", "govern"];
-    for (const dom of testDomains) {
+    const allDomains: DomainId[] = ["security", "science", "art", "explore", "learn", "social", "meta", "govern"];
+    for (const dom of allDomains) {
       const check = sched.checkCompetence(dom);
-      const icon = check.canAnswer ? "YES" : "IDK";
-      console.log(`    [${icon}] ${dom.padEnd(10)} ${check.color.padEnd(8)} — ${check.reason}`);
+      const icons: Record<CompetenceLevel, string> = {
+        BLIND: "---", BRIDGE: "-->", EXPLORE: "???", ANSWER: "YES", EXPERT: "***",
+      };
+      const icon = icons[check.level];
+      const bridge = check.hasBridge && check.level === "BLIND" ? " (has bridge)" : "";
+      console.log(`    [${icon}] ${check.level.padEnd(7)} ${dom.padEnd(10)} ${check.color.padEnd(8)} w=${check.seamWeight.toFixed(3).padStart(5)}${bridge}`);
+      console.log(`            ${check.reason}`);
     }
     console.log();
-    console.log(`    Systems with no seams on an axis structurally CANNOT reach answers there.`);
-    console.log(`    Not ignorance — the constants don't point that direction.`);
-    console.log(`    "I don't know" = honest. Hallucination = pretending your seams reach.`);
+    console.log(`    "I don't know" is structural, not ignorance.`);
+    console.log(`    The constants don't point that direction. Trying anyway = hallucination.`);
+    console.log(`    Add a seam (learn), borrow one (apprentice), or bridge (relay).`);
     console.log();
   }
 }
