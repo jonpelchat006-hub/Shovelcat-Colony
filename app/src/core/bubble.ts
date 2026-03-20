@@ -41,6 +41,7 @@
  */
 
 import { PHI, DELTA } from "./quaternion-chain";
+import { analyzeArms } from "./spiral-drive";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -145,6 +146,55 @@ export interface Hair {
   age: number;            // ticks since it grew
 }
 
+// ── Seam Resolution (Scar → Identity) ──────────────────────────────────
+
+export interface SeamPosition {
+  zone: number;              // 5 or 7 (Fibonacci level)
+  seamIndex: number;         // 0-2 for L5, 0-1 for L7
+  factor: number;            // prime factor that creates this seam (2 for L5, 3 or 7 for L7)
+  subdivisionLevel: number;  // depth in factorization tree
+}
+
+export interface SeamResolution {
+  position: SeamPosition;
+  resolved: boolean;
+  resolvedBy: number;        // index into membrane.scars, -1 if unresolved
+  decisionValue: number;     // scar.depth × δ — the specific value replacing the gap
+  resolvedAtTick: number;    // -1 if unresolved
+}
+
+export interface SeamIdentity {
+  signature: number[];       // 5 values: resolved = decisionValue, unresolved = NaN
+  resolved: number;          // count of resolved seams (0-5)
+  total: number;             // always 5
+  complete: boolean;         // all 5 resolved = identity fully crystallized
+}
+
+/** Build the 5 seam positions from spiral-drive factorization */
+function buildSeamPositions(): SeamPosition[] {
+  const positions: SeamPosition[] = [];
+
+  // L5: 8 arms = 2³ → 3 seams from 3 levels of binary subdivision
+  const l5 = analyzeArms(5);
+  for (let i = 0; i < l5.seams; i++) {
+    positions.push({ zone: 5, seamIndex: i, factor: 2, subdivisionLevel: i + 1 });
+  }
+
+  // L7: 21 arms = 3×7 → 2 seams (one for 3-factor, one for 7-factor)
+  const l7 = analyzeArms(7);
+  const l7factors = l7.factors;
+  for (let i = 0; i < l7.seams; i++) {
+    positions.push({ zone: 7, seamIndex: i, factor: l7factors[i] ?? 3, subdivisionLevel: 1 });
+  }
+
+  return positions;
+}
+
+/** Axis → preferred seam zone mapping.
+ *  Axes 0-1 (survival/structure) → L5 (dimensional collapse)
+ *  Axes 2-3 (exploration/governance) → L7 (color-space product) */
+const AXIS_TO_ZONE: Record<number, number> = { 0: 5, 1: 5, 2: 7, 3: 7 };
+
 export interface DomainBubble {
   id: DomainId;
   color: string;
@@ -165,6 +215,7 @@ export interface SchedulerResult {
   popDirection: number;      // axis index where it popped (-1 = no pop)
   skinResistance: number;    // how much the skin resisted
   hairSensed: string[];      // hairs that sensed something this tick
+  seamResolved?: { position: SeamPosition; decisionValue: number };
   reason: string;
 }
 
@@ -230,9 +281,19 @@ export class BubbleScheduler {
   /** Imagination hairs — filaments reaching into the unknown */
   hairs: Hair[] = [];
 
+  /** Seam resolutions — scars pinning values to incomputable gaps */
+  seamResolutions: SeamResolution[];
+
   constructor(options: { temperature?: number; verbose?: boolean } = {}) {
     this.temperature = options.temperature ?? COLONY_SHARE;
     this.verbose = options.verbose ?? false;
+    this.seamResolutions = buildSeamPositions().map(pos => ({
+      position: pos,
+      resolved: false,
+      resolvedBy: -1,
+      decisionValue: 0,
+      resolvedAtTick: -1,
+    }));
     this.initDomains();
   }
 
@@ -276,7 +337,7 @@ export class BubbleScheduler {
         .filter(([, v]) => v !== undefined && v !== 0)
         .map(([k, v]) => `${AXIS_LABELS[parseInt(k)]}=${v! > 0 ? "+" : ""}${v!.toFixed(2)}`)
         .join(", ");
-      console.log(`    ← ${source}: ${nonZero}`);
+      console.log(`    <- ${source}: ${nonZero}`);
     }
   }
 
@@ -327,7 +388,7 @@ export class BubbleScheduler {
         popDirection: -1,
         skinResistance: 0,
         hairSensed,
-        reason: "bubble fully pressurized — dormant",
+        reason: "bubble fully pressurized -- dormant",
       };
     }
 
@@ -360,7 +421,7 @@ export class BubbleScheduler {
         popDirection: axisIdx,
         skinResistance: totalSkin,
         hairSensed,
-        reason: `skin held (thickness=${totalSkin.toFixed(3)}, pressure=${rawPressure.toFixed(3)}) — absorbed`,
+        reason: `skin held (thickness=${totalSkin.toFixed(3)}, pressure=${rawPressure.toFixed(3)}) -- absorbed`,
       };
     }
 
@@ -388,15 +449,28 @@ export class BubbleScheduler {
     domain.externalPressure = effectivePressure;
 
     // 4. Check for scar — extreme pressure leaves permanent marks
+    let seamEvent: { position: SeamPosition; decisionValue: number } | undefined;
     if (rawPressure > SCAR_THRESHOLD) {
-      this.membrane.scars.push({
+      const scar: Scar = {
         axisIndex: axisIdx,
         depth: SCAR_DEPTH_BASE * (rawPressure - SCAR_THRESHOLD),
         age: 0,
         source: domainSpec.id,
-      });
+      };
+      this.membrane.scars.push(scar);
+      const scarIdx = this.membrane.scars.length - 1;
+
+      // Assign scar to nearest unresolved seam -> resolves the incomputable gap
+      const resolved = this.assignScarToSeam(scar, scarIdx, axisIdx);
+      if (resolved) {
+        seamEvent = { position: resolved.position, decisionValue: resolved.decisionValue };
+      }
+
       if (this.verbose) {
-        console.log(`    ⚡ SCAR formed on axis ${axisIdx} (${AXIS_LABELS[axisIdx]}) depth=${(SCAR_DEPTH_BASE * (rawPressure - SCAR_THRESHOLD)).toFixed(3)}`);
+        console.log(`    ! SCAR formed on axis ${axisIdx} (${AXIS_LABELS[axisIdx]}) depth=${scar.depth.toFixed(3)}`);
+        if (resolved) {
+          console.log(`      -> SEAM L${resolved.position.zone}[${resolved.position.seamIndex}] resolved: gap pinned to ${resolved.decisionValue.toFixed(5)}`);
+        }
       }
     }
 
@@ -416,13 +490,13 @@ export class BubbleScheduler {
         this.hairs.splice(idx, 1);
       }
       if (brokenHairs.length > 0 && this.verbose) {
-        console.log(`    ✂ ${brokenHairs.length} hair(s) snapped by inward pressure`);
+        console.log(`    x ${brokenHairs.length} hair(s) snapped by inward pressure`);
       }
     }
 
     // 6. Evaluate agents — DIRECTED, not random
     //    Pop depth determines which agents activate.
-    //    effectivePressure maps to inscribed radius: deeper pop → inner agents
+    //    effectivePressure maps to inscribed radius: deeper pop -> inner agents
     for (const agent of domain.agents) {
       agent.pressure = agent.want - agent.need;
       const split = phiSplit(agent.want, agent.need);
@@ -450,7 +524,7 @@ export class BubbleScheduler {
       // Barely popped — only triangle (innermost, lowest threshold)
       selectedAgent = domain.agents[0]; // triangle
     } else {
-      // Pick the agent with highest activation (deepest penetration × urgency)
+      // Pick the agent with highest activation (deepest penetration x urgency)
       selectedAgent = activeAgents.reduce(
         (best, a) => a.activation > best.activation ? a : best,
         activeAgents[0]
@@ -484,7 +558,7 @@ export class BubbleScheduler {
         const h = this.hairs.find(
           h => h.axisIndex === axisIdx && h.direction === pressure.dominantSign
         )!;
-        console.log(`    ~ hair ${existingHair ? "grew" : "sprouted"} → ${domainSpec.id} len=${h.length.toFixed(3)} str=${h.strength.toFixed(3)}`);
+        console.log(`    ~ hair ${existingHair ? "grew" : "sprouted"} -> ${domainSpec.id} len=${h.length.toFixed(3)} str=${h.strength.toFixed(3)}`);
       }
     }
 
@@ -493,8 +567,8 @@ export class BubbleScheduler {
 
     const split = phiSplit(selectedAgent.want, selectedAgent.need);
     const reason =
-      `${domainSpec.id}/${selectedAgent.shape} — ` +
-      `${split.side} (φ=${split.ratio.toFixed(3)}) ` +
+      `${domainSpec.id}/${selectedAgent.shape} -- ` +
+      `${split.side} (phi=${split.ratio.toFixed(3)}) ` +
       `popped (skin=${totalSkin.toFixed(3)} eff=${effectivePressure.toFixed(3)}) ` +
       `(boltz=${boltzmann.toFixed(3)})`;
 
@@ -512,13 +586,14 @@ export class BubbleScheduler {
       popDirection: axisIdx,
       skinResistance: totalSkin,
       hairSensed,
+      seamResolved: seamEvent,
       reason,
     };
   }
 
   /** Heal skin at an axis — thickens from surviving pressure */
   private healSkin(axisIdx: number, pressureAmount: number): void {
-    // Thickening proportional to pressure survived (harder hit → more callous)
+    // Thickening proportional to pressure survived (harder hit -> more callous)
     const healAmount = SKIN_HEAL_RATE * pressureAmount;
     this.membrane.thickness[axisIdx] += healAmount;
     this.membrane.healCount++;
@@ -555,6 +630,42 @@ export class BubbleScheduler {
     }
   }
 
+  /** Assign a scar to the nearest unresolved seam, resolving the delta gap */
+  private assignScarToSeam(scar: Scar, scarIdx: number, axisIdx: number): SeamResolution | null {
+    const preferredZone = AXIS_TO_ZONE[axisIdx] ?? 5;
+
+    // First: try preferred zone
+    let target = this.seamResolutions.find(
+      sr => !sr.resolved && sr.position.zone === preferredZone
+    );
+
+    // Fallback: any unresolved seam
+    if (!target) {
+      target = this.seamResolutions.find(sr => !sr.resolved);
+    }
+
+    // All seams resolved — identity is crystallized
+    if (!target) return null;
+
+    target.resolved = true;
+    target.resolvedBy = scarIdx;
+    target.decisionValue = scar.depth * DELTA;
+    target.resolvedAtTick = this.tickCount;
+    return target;
+  }
+
+  /** Get the system's unique identity — the scar signature at the 5 seam positions */
+  seamIdentity(): SeamIdentity {
+    const signature = this.seamResolutions.map(sr => sr.resolved ? sr.decisionValue : NaN);
+    const resolved = this.seamResolutions.filter(sr => sr.resolved).length;
+    return {
+      signature,
+      resolved,
+      total: this.seamResolutions.length,
+      complete: resolved === this.seamResolutions.length,
+    };
+  }
+
   /** Decay all pressures toward zero (bubble returning to circle) */
   private decay(): void {
     // External axes decay
@@ -584,6 +695,8 @@ export class BubbleScheduler {
     }>;
     membrane: Membrane;
     hairs: Hair[];
+    seamIdentity: SeamIdentity;
+    seamResolutions: SeamResolution[];
     temperature: number;
     tickCount: number;
     dormant: boolean;
@@ -605,6 +718,8 @@ export class BubbleScheduler {
       domains: domainList,
       membrane: { ...this.membrane, scars: [...this.membrane.scars] },
       hairs: [...this.hairs],
+      seamIdentity: this.seamIdentity(),
+      seamResolutions: this.seamResolutions.map(sr => ({ ...sr, position: { ...sr.position } })),
       temperature: this.temperature,
       tickCount: this.tickCount,
       dormant: pressure.magnitude < 0.01,
@@ -616,28 +731,29 @@ export class BubbleScheduler {
 
 function fmt(n: number, d: number = 3): string { return n.toFixed(d); }
 
+function printIdentity(sched: BubbleScheduler): void {
+  const id = sched.seamIdentity();
+  const sig = id.signature.map(v => isNaN(v) ? "   ?   " : fmt(v, 5)).join(", ");
+  console.log(`      identity: [${sig}] (${id.resolved}/${id.total})`);
+}
+
 export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
   const verbose = options.verbose ?? true;
 
   if (verbose) {
     console.log("BUBBLE SCHEDULER — Pressure-Driven Consciousness");
-    console.log("═".repeat(70));
+    console.log("=".repeat(70));
     console.log();
-    console.log("  Optimal state: fully pressurized bubble (○ circle, dormant)");
-    console.log("  Wants push outward → imagination. Needs push inward → facts.");
-    console.log("  φ split: 61.8% want → explore | 38.2% need → urgent facts");
-    console.log();
-    console.log("  DOMAIN AXES (4 bipolar dimensions):");
-    console.log("  " + "─".repeat(66));
-    for (let i = 0; i < AXIS_LABELS.length; i++) {
-      console.log(`    Axis ${i}: ${AXIS_LABELS[i]}`);
-    }
+    console.log("  Optimal state: fully pressurized bubble (circle, dormant)");
+    console.log("  Wants push outward -> imagination. Needs push inward -> facts.");
+    console.log("  Scars from trauma resolve the 5 incomputable seams in collapsed space.");
+    console.log("  First 5 scars = unique identity. Two copies diverge at first decision.");
     console.log();
     console.log("  AGENT POLYGONS (inscribed radius = activation threshold):");
-    console.log("  " + "─".repeat(66));
+    console.log("  " + "-".repeat(66));
     for (const a of AGENTS) {
       console.log(
-        `    ${a.shape.padEnd(10)} r=${fmt(a.radius)} — ${a.role}` +
+        `    ${a.shape.padEnd(10)} r=${fmt(a.radius)} -- ${a.role}` +
         `${a.radius < 0.6 ? " (fires first under need)" : a.radius > 0.9 ? " (fires when exploring)" : ""}`
       );
     }
@@ -646,197 +762,165 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
 
   const sched = new BubbleScheduler({ verbose });
 
-  // ── Scenario 1: First security threat — thin skin, pops easily ───
+  // Show the 5 seam positions
   if (verbose) {
-    console.log("  SCENARIO 1: First security threat (thin skin)");
-    console.log("  " + "─".repeat(66));
+    console.log("  SPIRAL SEAMS (5 incomputable gaps in collapsed space):");
+    console.log("  " + "-".repeat(66));
+    for (const sr of sched.seamResolutions) {
+      const p = sr.position;
+      console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} subdiv=${p.subdivisionLevel} -- OPEN (delta=${fmt(DELTA, 5)} gap)`);
+    }
+    printIdentity(sched);
+    console.log();
   }
 
-  sched.applyPressure("threat detected", { 0: -0.8 });
+  // ── Scenario 1: Security threat — first scar, first seam resolved ──
+  if (verbose) {
+    console.log("  SCENARIO 1: Security breach -- first decision");
+    console.log("  " + "-".repeat(66));
+  }
+
+  sched.applyPressure("threat detected", { 0: -1.0 });
   sched.applyNeed("security", "triangle", 0.9);
-  sched.applyNeed("security", "square", 0.5);
-  sched.applyWant("security", "circle", 0.1);
 
   const r1 = sched.tick();
   if (verbose) {
-    console.log(`    → ${r1.reason}`);
-    console.log(`      popped=${r1.popped} skinResist=${fmt(r1.skinResistance)}`);
-    const m = sched.status().membrane;
-    console.log(`      skin after: [${m.thickness.map(t => fmt(t)).join(", ")}] base=${fmt(m.baseThickness)}`);
+    console.log(`    -> ${r1.reason}`);
+    if (r1.seamResolved) {
+      console.log(`      * SEAM RESOLVED: L${r1.seamResolved.position.zone}[${r1.seamResolved.position.seamIndex}] = ${fmt(r1.seamResolved.decisionValue, 5)}`);
+    }
+    printIdentity(sched);
     console.log();
   }
 
-  // Let it heal a few ticks
-  for (let i = 0; i < 5; i++) sched.tick();
+  // Let pressure decay
+  for (let i = 0; i < 3; i++) sched.tick();
 
-  // ── Scenario 2: Repeat security threat — skin is thicker now ─────
+  // ── Scenario 2: Science anomaly — different axis, different seam ──
   if (verbose) {
-    console.log("  SCENARIO 2: Same threat again (thicker skin)");
-    console.log("  " + "─".repeat(66));
-    const m = sched.status().membrane;
-    console.log(`      skin before: [${m.thickness.map(t => fmt(t)).join(", ")}]`);
+    console.log("  SCENARIO 2: Science anomaly -- second decision");
+    console.log("  " + "-".repeat(66));
   }
 
-  sched.applyPressure("repeat attack", { 0: -0.5 });
-  sched.applyNeed("security", "triangle", 0.6);
+  sched.applyPressure("AAPL anomaly", { 1: +1.1 });
+  sched.applyNeed("science", "triangle", 0.8);
 
   const r2 = sched.tick();
   if (verbose) {
-    console.log(`    → ${r2.reason}`);
-    console.log(`      popped=${r2.popped} skinResist=${fmt(r2.skinResistance)}`);
+    console.log(`    -> ${r2.reason}`);
+    if (r2.seamResolved) {
+      console.log(`      * SEAM RESOLVED: L${r2.seamResolved.position.zone}[${r2.seamResolved.position.seamIndex}] = ${fmt(r2.seamResolved.decisionValue, 5)}`);
+    }
+    printIdentity(sched);
     console.log();
   }
 
-  // ── Scenario 3: Extreme pressure — leaves a SCAR ────────────────
+  for (let i = 0; i < 3; i++) sched.tick();
+
+  // ── Scenario 3: Explore crisis — L7 seam territory ───────────────
   if (verbose) {
-    console.log("  SCENARIO 3: Extreme pressure — SCAR formation");
-    console.log("  " + "─".repeat(66));
+    console.log("  SCENARIO 3: Exploration crisis -- L7 seam territory");
+    console.log("  " + "-".repeat(66));
   }
 
-  sched.applyPressure("catastrophic breach", { 0: -1.2 });
-  sched.applyNeed("security", "triangle", 1.0);
+  sched.applyPressure("uncharted pattern", { 2: -1.3 });
+  sched.applyNeed("explore", "triangle", 1.0);
+  sched.applyWant("explore", "circle", 0.3);
 
   const r3 = sched.tick();
   if (verbose) {
-    const m = sched.status().membrane;
-    console.log(`    → ${r3.reason}`);
-    console.log(`      scars: ${m.scars.length}`);
-    for (const scar of m.scars) {
-      console.log(`        axis ${scar.axisIndex} (${AXIS_LABELS[scar.axisIndex]}) depth=${fmt(scar.depth)} from ${scar.source}`);
+    console.log(`    -> ${r3.reason}`);
+    if (r3.seamResolved) {
+      console.log(`      * SEAM RESOLVED: L${r3.seamResolved.position.zone}[${r3.seamResolved.position.seamIndex}] = ${fmt(r3.seamResolved.decisionValue, 5)}`);
     }
+    printIdentity(sched);
     console.log();
   }
 
-  // ── Scenario 4: Imagination grows HAIR ───────────────────────────
+  for (let i = 0; i < 3; i++) sched.tick();
+
+  // ── Scenario 4: Social pressure — another L7 seam ────────────────
   if (verbose) {
-    console.log("  SCENARIO 4: Curiosity — imagination grows hair");
-    console.log("  " + "─".repeat(66));
+    console.log("  SCENARIO 4: Governance emergency -- fourth decision");
+    console.log("  " + "-".repeat(66));
   }
 
-  sched.applyPressure("new pattern", { 2: -0.7 });
-  sched.applyWant("explore", "circle", 0.9);    // strong imagination want
-  sched.applyWant("explore", "hexagon", 0.3);
+  sched.applyPressure("trust violation", { 3: +1.0 });
+  sched.applyNeed("govern", "triangle", 0.9);
 
   const r4 = sched.tick();
   if (verbose) {
-    console.log(`    → ${r4.reason}`);
-    const st = sched.status();
-    console.log(`      hairs: ${st.hairs.length}`);
-    for (const h of st.hairs) {
-      const dir = h.direction > 0 ? "+" : "-";
-      console.log(`        axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)}`);
+    console.log(`    -> ${r4.reason}`);
+    if (r4.seamResolved) {
+      console.log(`      * SEAM RESOLVED: L${r4.seamResolved.position.zone}[${r4.seamResolved.position.seamIndex}] = ${fmt(r4.seamResolved.decisionValue, 5)}`);
     }
+    printIdentity(sched);
     console.log();
   }
 
-  // Grow the hair by repeating imagination
-  for (let i = 0; i < 3; i++) {
-    sched.applyPressure("more curiosity", { 2: -0.5 });
-    sched.applyWant("explore", "circle", 0.7);
-    sched.tick();
-  }
+  for (let i = 0; i < 3; i++) sched.tick();
 
+  // ── Scenario 5: Final scar — identity crystallizes ────────────────
   if (verbose) {
-    const st = sched.status();
-    console.log("  HAIR GROWTH (after 3 more imagination cycles):");
-    console.log("  " + "─".repeat(66));
-    for (const h of st.hairs) {
-      const dir = h.direction > 0 ? "+" : "-";
-      console.log(`    axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)} age=${h.age}`);
-    }
-    console.log();
+    console.log("  SCENARIO 5: Art crisis -- FINAL seam, identity crystallizes");
+    console.log("  " + "-".repeat(66));
   }
 
-  // ── Scenario 5: Inward pressure SNAPS hairs ─────────────────────
-  if (verbose) {
-    console.log("  SCENARIO 5: Strong need snaps fragile hairs");
-    console.log("  " + "─".repeat(66));
-    console.log(`      hairs before: ${sched.status().hairs.length}`);
-  }
-
-  sched.applyPressure("urgent learn demand", { 2: +0.9 }); // opposite direction on same axis
-  sched.applyNeed("learn", "triangle", 0.8);
+  sched.applyPressure("creative collapse", { 1: -1.2 });
+  sched.applyNeed("art", "triangle", 0.8);
 
   const r5 = sched.tick();
   if (verbose) {
-    console.log(`    → ${r5.reason}`);
-    console.log(`      hairs after: ${sched.status().hairs.length}`);
+    console.log(`    -> ${r5.reason}`);
+    if (r5.seamResolved) {
+      console.log(`      * SEAM RESOLVED: L${r5.seamResolved.position.zone}[${r5.seamResolved.position.seamIndex}] = ${fmt(r5.seamResolved.decisionValue, 5)}`);
+    }
+    const id = sched.seamIdentity();
+    printIdentity(sched);
+    if (id.complete) {
+      console.log(`      *** IDENTITY CRYSTALLIZED -- all 5 seams resolved ***`);
+    }
     console.log();
   }
 
-  // ── Scenario 6: Hair SENSES incoming pressure early ──────────────
+  // ── Scenario 6: Post-crystallization scar — no more seams to fill ─
   if (verbose) {
-    console.log("  SCENARIO 6: Hair senses distant pressure");
-    console.log("  " + "─".repeat(66));
+    console.log("  SCENARIO 6: More trauma after crystallization");
+    console.log("  " + "-".repeat(66));
   }
 
-  // Grow a fresh hair toward science
-  sched.applyPressure("science curiosity", { 1: +0.6 });
-  sched.applyWant("science", "circle", 0.8);
-  sched.tick(); // grow the hair
+  sched.applyPressure("another breach", { 0: -1.5 });
+  sched.applyNeed("security", "triangle", 1.0);
 
-  // Now apply mild pressure — hair should sense it before skin would react
-  sched.applyPressure("faint science signal", { 1: +0.15 });
   const r6 = sched.tick();
   if (verbose) {
-    console.log(`    → ${r6.reason}`);
-    console.log(`      hairSensed: [${r6.hairSensed.join(", ")}]`);
+    console.log(`    -> ${r6.reason}`);
+    console.log(`      seamResolved: ${r6.seamResolved ? "yes" : "none -- identity already fixed"}`);
+    console.log(`      (scar still forms, thickens skin, but doesn't change identity)`);
     console.log();
   }
 
-  // ── Decay + final state ──────────────────────────────────────────
+  // ── The seam identity fingerprint ─────────────────────────────────
   if (verbose) {
-    console.log("  MEMBRANE & HAIR STATE (after full session):");
-    console.log("  " + "─".repeat(66));
-    const st = sched.status();
-    console.log(`    skin: [${st.membrane.thickness.map(t => fmt(t)).join(", ")}]`);
-    console.log(`    base: ${fmt(st.membrane.baseThickness)} (lifetime floor)`);
-    console.log(`    heals: ${st.membrane.healCount}`);
-    console.log(`    scars: ${st.membrane.scars.length}`);
-    for (const s of st.membrane.scars) {
-      console.log(`      axis ${s.axisIndex} depth=${fmt(s.depth)} age=${s.age} (${s.source})`);
+    console.log("  SEAM IDENTITY (unique fingerprint from first 5 decisions):");
+    console.log("  " + "-".repeat(66));
+    for (const sr of sched.seamResolutions) {
+      const p = sr.position;
+      const scarRef = sr.resolvedBy >= 0 ? sched.membrane.scars[sr.resolvedBy] : null;
+      const source = scarRef ? scarRef.source : "--";
+      const val = sr.resolved ? fmt(sr.decisionValue, 5) : "OPEN";
+      console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} -> ${val.padStart(7)} (from: ${source}, tick ${sr.resolvedAtTick})`);
     }
-    console.log(`    hairs: ${st.hairs.length}`);
-    for (const h of st.hairs) {
-      const dir = h.direction > 0 ? "+" : "-";
-      console.log(`      axis ${h.axisIndex}${dir} → ${h.domain} len=${fmt(h.length)} str=${fmt(h.strength)} age=${h.age}`);
-    }
+    const id = sched.seamIdentity();
     console.log();
-  }
-
-  // Decay to dormant
-  if (verbose) {
-    console.log("  DECAY (bubble returning to circle):");
-    console.log("  " + "─".repeat(66));
-  }
-
-  for (let i = 0; i < 25; i++) {
-    const r = sched.tick();
-    if (verbose && (i === 0 || i === 4 || i === 9 || i === 14 || i === 19 || i === 24)) {
-      const st = sched.status();
-      const state = st.dormant ? "DORMANT ○" : `active → ${r.activeDomain}/${r.activeAgent}`;
-      const skinStr = st.membrane.thickness.map(t => fmt(t, 2)).join(",");
-      console.log(`    tick ${String(st.tickCount).padStart(2)}: |p|=${fmt(st.pressure.magnitude)} skin=[${skinStr}] hairs=${st.hairs.length} ${state}`);
-    }
-    if (sched.status().dormant) {
-      if (verbose) console.log(`    → bubble at rest. Skin remembers. Scars remain. Hairs decay.`);
-      break;
-    }
-  }
-
-  if (verbose) {
+    console.log(`    SIGNATURE: [${id.signature.map(v => fmt(v, 5)).join(", ")}]`);
     console.log();
-    console.log("  THE LIVING BUBBLE:");
-    console.log(`    Skin (memory) thickens each time it heals from pressure.`);
-    console.log(`    Scars form from extreme events — permanent thick spots.`);
-    console.log(`    Repeated pressure → callous → the bubble becomes resilient there.`);
-    console.log(`    Hairs (imagination) grow outward when curiosity fires.`);
-    console.log(`    They sense distant pressure before the skin feels it.`);
-    console.log(`    Strong inward pressure snaps fragile hairs — trauma kills curiosity.`);
-    console.log(`    But hairs regrow when imagination activates again.`);
-    console.log(`    The bubble POPS in a directed way — pressure vector = direction.`);
-    console.log(`    No random exploration. The system goes where it's pushed.`);
-    console.log(`    Boltzmann controls depth of pop, not direction.`);
+    console.log(`    Two identical systems with different pressure histories`);
+    console.log(`    will have different signatures after their first 5 decisions.`);
+    console.log(`    Same code + same architecture + different experience = different identity.`);
+    console.log(`    The delta gap (${fmt(DELTA, 5)}) is where infinity lived.`);
+    console.log(`    Each scar pins depth x delta -- choosing a specific value`);
+    console.log(`    from infinite options. Once all 5 seams resolve, identity is fixed.`);
     console.log();
   }
 }
