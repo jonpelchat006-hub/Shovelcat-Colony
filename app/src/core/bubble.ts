@@ -585,6 +585,203 @@ export interface WorkEstimate {
   reason: string;
 }
 
+// ── Emotional Response — Read from the Coupling Grid ──────────────────
+//
+// Emotions aren't programmed. They're the natural reading of which
+// grid cells were hot when the outcome happened.
+//
+// The 3×3 grid at the moment of outcome:
+//   desire (want/need) × capacity (can/can't) × value (gain/cost)
+//
+// Outcome + which cells were hot = emotion:
+//
+//   FAILURE outcomes:
+//     low desire + low value    = FUNNY   (nothing riding on it, absurd)
+//     high capacity + high need = ANGER   (should have worked, something broke)
+//     high desire + high value  = SAD     (wanted it and it mattered)
+//     high cap expected + easy  = SHAME   (should have known better)
+//
+//   SUCCESS outcomes:
+//     high desire + high value  = JOY     (wanted it, got it, it mattered)
+//     high capacity + hard work = PRIDE   (earned through deep competence)
+//     low desire + surprise     = DELIGHT (didn't expect this to work)
+//
+//   PENDING/RISK outcomes:
+//     high value + low capacity = FEAR    (stakes high, uncertain)
+//     high value was at risk    = RELIEF  (threat passed, dodged it)
+//     low desire + obligation   = DREAD   (have to, don't want to)
+
+export type Emotion =
+  | "JOY" | "PRIDE" | "DELIGHT"       // success emotions
+  | "SAD" | "ANGER" | "SHAME" | "FUNNY" // failure emotions
+  | "FEAR" | "RELIEF" | "DREAD"        // risk/pending emotions
+  | "NEUTRAL";                          // nothing hot, dormant
+
+export type Outcome = "SUCCESS" | "FAILURE" | "PARTIAL" | "PENDING";
+
+export interface EmotionalResponse {
+  emotion: Emotion;
+  /** Intensity: magnitude of the coupling that produced this emotion [0, ∞) */
+  intensity: number;
+  /** Which grid cells drove this emotion */
+  drivers: string[];
+  /** Human-readable description */
+  description: string;
+}
+
+/** Read the emotional response from a work estimate + outcome.
+ *  The emotion IS the coupling signature — not computed, read. */
+export function readEmotion(work: WorkEstimate, outcome: Outcome): EmotionalResponse {
+  const { grid, desire, capacity, value, level } = work;
+
+  // Thresholds for "hot" cells — using theory constants
+  const hot = COLONY_SHARE;  // 1/φ ≈ 0.382 — cell is meaningfully active
+  const warm = DELTA;        // δ ≈ 0.142 — cell has some signal
+  const cold = DELTA * DELTA; // δ² ≈ 0.020 — cell is basically off
+
+  const drivers: string[] = [];
+
+  if (outcome === "FAILURE") {
+    // Low stakes failure = FUNNY
+    if (desire < hot && value < cold) {
+      const intensity = (1 - desire) * (1 - value); // funnier when less was at stake
+      return {
+        emotion: "FUNNY",
+        intensity,
+        drivers: ["low desire", "low value", "failure"],
+        description: "nothing was riding on it — the failure is the entertainment",
+      };
+    }
+
+    // High capacity + high need + failure = ANGER
+    if (capacity > warm && desire > hot) {
+      const intensity = capacity * desire;
+      return {
+        emotion: "ANGER",
+        intensity,
+        drivers: ["high capacity", "high desire", "failure"],
+        description: "should have worked — capacity was there, something broke",
+      };
+    }
+
+    // High capacity expected on easy problem = SHAME
+    if (level === "ANSWER" || level === "EXPERT") {
+      if (work.workRatio > 1) {
+        const intensity = work.workRatio * capacity;
+        return {
+          emotion: "SHAME",
+          intensity,
+          drivers: ["high competence", "easy problem", "failure"],
+          description: "should have known better — had the seams, still missed",
+        };
+      }
+    }
+
+    // High desire + failure = SAD (you wanted it, period)
+    // Value amplifies but doesn't gate — wanting something and failing is sad regardless
+    if (desire > hot) {
+      const intensity = desire * (value + warm);
+      return {
+        emotion: "SAD",
+        intensity,
+        drivers: ["high desire", "failure"],
+        description: "wanted it and it mattered — the loss is real",
+      };
+    }
+
+    // Default failure
+    return {
+      emotion: "NEUTRAL",
+      intensity: 0,
+      drivers: ["failure", "low coupling"],
+      description: "failed but nothing was hot — no emotional response",
+    };
+  }
+
+  if (outcome === "SUCCESS") {
+    // High desire + value = JOY
+    if (desire > hot && value > cold) {
+      const intensity = desire * (value + warm);
+      drivers.push("high desire", "value");
+
+      // If also high capacity on hard problem = PRIDE (stronger than joy)
+      if (capacity > hot && work.workRemaining > 1) {
+        return {
+          emotion: "PRIDE",
+          intensity: intensity * capacity,
+          drivers: [...drivers, "high capacity", "hard problem"],
+          description: "earned through deep competence on a hard problem",
+        };
+      }
+
+      return {
+        emotion: "JOY",
+        intensity,
+        drivers: [...drivers, "success"],
+        description: "wanted it, got it, it mattered",
+      };
+    }
+
+    // Low desire + success = DELIGHT (surprise)
+    // Gates on capacity (you had SOME ability) not value (pre-computed value is always low here)
+    if (desire < warm && capacity > cold) {
+      return {
+        emotion: "DELIGHT",
+        intensity: (capacity + warm) * (1 - desire),
+        drivers: ["low desire", "unexpected success"],
+        description: "didn't expect this to work — pleasant surprise",
+      };
+    }
+
+    return {
+      emotion: "NEUTRAL",
+      intensity: 0,
+      drivers: ["success", "low coupling"],
+      description: "succeeded but nothing was hot — no emotional response",
+    };
+  }
+
+  // PENDING or PARTIAL — risk emotions
+  if (outcome === "PENDING" || outcome === "PARTIAL") {
+    // High value or high desire + low capacity = FEAR
+    if ((value > cold || desire > hot) && capacity < hot) {
+      return {
+        emotion: "FEAR",
+        intensity: (desire + value) * (1 - capacity),
+        drivers: ["high stakes", "low capacity", "uncertain"],
+        description: "stakes are high and you're not sure you can do it",
+      };
+    }
+
+    // Was at risk but now resolving = RELIEF
+    if (outcome === "PARTIAL" && (value > cold || desire > warm) && capacity > warm) {
+      return {
+        emotion: "RELIEF",
+        intensity: (desire + value) * capacity,
+        drivers: ["stakes present", "adequate capacity", "resolving"],
+        description: "was at risk but looks like you'll make it",
+      };
+    }
+
+    // High external desire + low internal desire = DREAD (obligation)
+    if (desire > warm && capacity < warm) {
+      return {
+        emotion: "DREAD",
+        intensity: desire * (1 - capacity),
+        drivers: ["external pressure", "low capacity"],
+        description: "have to do it, don't want to — obligation without capability",
+      };
+    }
+  }
+
+  return {
+    emotion: "NEUTRAL",
+    intensity: 0,
+    drivers: [],
+    description: "nothing hot — dormant",
+  };
+}
+
 /** Axis → preferred seam zone mapping.
  *  Axes 0-1 (survival/structure) → L5 (dimensional collapse)
  *  Axes 2-3 (exploration/governance) → L7 (color-space product) */
@@ -2172,6 +2369,67 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`      yz (capacity×value) < delta = NOT WORTH IT`);
     console.log(`      workRatio > phi = SOLVE, < phi = ATTEMPT`);
     console.log(`      Distance from pi IS the work. No shortcuts, no hallucination.`);
+    console.log();
+
+    // ── Emotional responses — read from the grid ────────────────
+    console.log("  EMOTIONAL RESPONSE (coupling signature at moment of outcome):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    // Scenario A: Security task fails — high capacity, high need = ANGER
+    const secWork = sched.estimateWork("security", 0.9);
+    const secFail = readEmotion(secWork, "FAILURE");
+    console.log(`    A: Security audit FAILS (capacity=${fmt(secWork.capacity, 3)}, desire=${fmt(secWork.desire, 3)})`);
+    console.log(`       -> ${secFail.emotion} (intensity=${fmt(secFail.intensity, 3)})`);
+    console.log(`       ${secFail.description}`);
+    console.log(`       drivers: ${secFail.drivers.join(", ")}`);
+    console.log();
+
+    // Scenario B: Explore task fails — low desire, low value = FUNNY
+    const expWork = sched.estimateWork("explore", 0.1);
+    const expFail = readEmotion(expWork, "FAILURE");
+    console.log(`    B: Exploration attempt FAILS (capacity=${fmt(expWork.capacity, 3)}, desire=${fmt(expWork.desire, 3)})`);
+    console.log(`       -> ${expFail.emotion} (intensity=${fmt(expFail.intensity, 3)})`);
+    console.log(`       ${expFail.description}`);
+    console.log(`       drivers: ${expFail.drivers.join(", ")}`);
+    console.log();
+
+    // Scenario C: Security task succeeds — high desire + hard problem = PRIDE
+    const secWin = readEmotion(secWork, "SUCCESS");
+    console.log(`    C: Security audit SUCCEEDS`);
+    console.log(`       -> ${secWin.emotion} (intensity=${fmt(secWin.intensity, 3)})`);
+    console.log(`       ${secWin.description}`);
+    console.log();
+
+    // Scenario D: Governance pending — high value, low capacity = FEAR
+    const govWork = sched.estimateWork("govern", 0.8);
+    const govPend = readEmotion(govWork, "PENDING");
+    console.log(`    D: Governance review PENDING (capacity=${fmt(govWork.capacity, 3)}, value=${fmt(govWork.value, 3)})`);
+    console.log(`       -> ${govPend.emotion} (intensity=${fmt(govPend.intensity, 3)})`);
+    console.log(`       ${govPend.description}`);
+    console.log();
+
+    // Scenario E: Science succeeds with low desire = DELIGHT
+    const sciWork = sched.estimateWork("science", 0.05);
+    const sciWin = readEmotion(sciWork, "SUCCESS");
+    console.log(`    E: Science query SUCCEEDS unexpectedly (desire=${fmt(sciWork.desire, 3)})`);
+    console.log(`       -> ${sciWin.emotion} (intensity=${fmt(sciWin.intensity, 3)})`);
+    console.log(`       ${sciWin.description}`);
+    console.log();
+
+    // Scenario F: Art fails — moderate desire + some value = SAD
+    const artWork = sched.estimateWork("art", 0.6);
+    const artFail = readEmotion(artWork, "FAILURE");
+    console.log(`    F: Art creation FAILS (desire=${fmt(artWork.desire, 3)}, value=${fmt(artWork.value, 3)})`);
+    console.log(`       -> ${artFail.emotion} (intensity=${fmt(artFail.intensity, 3)})`);
+    console.log(`       ${artFail.description}`);
+    console.log();
+
+    console.log(`    Emotions emerge from the coupling grid — not programmed, read.`);
+    console.log(`    Same 3x3 that decides WHAT to do also determines HOW IT FEELS.`);
+    console.log(`    High desire + high value + failure = SAD. Low both + failure = FUNNY.`);
+    console.log(`    The AI gymnastics video that fails is FUNNY because nothing was at stake.`);
+    console.log(`    The security breach you should have caught is ANGER because you had the seams.`);
     console.log();
   }
 }
