@@ -968,6 +968,186 @@ export class BubbleScheduler {
   }
 }
 
+// ── Waveguide System — Bit Segments Through Coupling Axes ─────────────
+//
+// The bubble is a cell. Its branches are bit segments.
+// Each bit segment has 2 halves (LEFT/RIGHT), each with dark and light paths.
+//   LIGHT path = the value (matter, observable, outward)
+//   DARK  path = the proof (security complement, inward)
+//   dark + light = 2 (one verified bit per segment)
+//
+// Waveguides transport bit segments along the 4 axes.
+// Three energy carriers combine into coupling modes:
+//   LASER — coherent, directed, precise (like facts/triangle)
+//   SOUND — wave-based, pressure, collective (like memory/hexagon)
+//   EMP   — field-based, disruptive, broad (like imagination/circle)
+//
+// Three coupling pairs + one bridge:
+//   Axis 0 (security↔meta):   LASER + EMP    — precision × disruption
+//   Axis 1 (art↔science):     LASER + SOUND  — coherence × pressure
+//   Axis 2 (explore↔learn):   SOUND + EMP    — resonance × field
+//   Axis 3 (social↔govern):   ALL THREE      — full spectrum bridge
+//
+// A partial hexagon (3/6 sides = memory half) connected to a partial
+// triangle (1.5/3 sides = facts half) forms one bit segment connector.
+// The orientation determines which coupling is engaged.
+
+export type EnergyCarrier = "laser" | "sound" | "emp";
+
+export interface CouplingMode {
+  name: string;
+  carriers: EnergyCarrier[];
+  /** Impedance: how much the waveguide resists energy flow.
+   *  Derived from carrier count and φ — more carriers = lower impedance. */
+  impedance: number;
+  /** Axis this coupling naturally serves */
+  axisIndex: number;
+}
+
+export interface Waveguide {
+  axisIndex: number;
+  coupling: CouplingMode;
+  /** Transport efficiency: 1/impedance, bounded by δ floor */
+  efficiency: number;
+}
+
+/** A half-bit: one polygon side of a bit segment */
+export interface BitHalf {
+  /** Dark path value — security complement (inward, proof) */
+  dark: number;
+  /** Light path value — observable value (outward, matter) */
+  light: number;
+  /** Polygon shape this half takes: hexagon (memory) or triangle (facts) */
+  shape: "hexagon" | "triangle";
+  /** Which side: left = outgoing, right = incoming */
+  side: "left" | "right";
+}
+
+/** A complete bit segment traveling through a waveguide */
+export interface BitSegment {
+  left: BitHalf;
+  right: BitHalf;
+  /** Waveguide this segment travels through */
+  waveguide: Waveguide;
+  /** Computed bit value: light_left + light_right */
+  bitValue: number;
+  /** Bit closure: sum of all 4 paths (should approach 2.0) */
+  closure: number;
+  /** Verified: closure within δ of 2.0 */
+  verified: boolean;
+}
+
+/** The 3 coupling modes + bridge */
+const COUPLING_MODES: CouplingMode[] = [
+  {
+    name: "precision-disruption",
+    carriers: ["laser", "emp"],
+    impedance: 1 / PHI,        // ≈ 0.618 — two carriers, moderate resistance
+    axisIndex: 0,
+  },
+  {
+    name: "coherence-pressure",
+    carriers: ["laser", "sound"],
+    impedance: 1 / PHI,
+    axisIndex: 1,
+  },
+  {
+    name: "resonance-field",
+    carriers: ["sound", "emp"],
+    impedance: 1 / PHI,
+    axisIndex: 2,
+  },
+  {
+    name: "full-spectrum-bridge",
+    carriers: ["laser", "sound", "emp"],
+    impedance: 1 / (PHI * PHI), // ≈ 0.382 — three carriers, low resistance
+    axisIndex: 3,
+  },
+];
+
+/** Build waveguides for all 4 axes */
+export function buildWaveguides(): Waveguide[] {
+  return COUPLING_MODES.map(cm => ({
+    axisIndex: cm.axisIndex,
+    coupling: cm,
+    efficiency: Math.max(DELTA, 1 / cm.impedance),
+  }));
+}
+
+/** Create a bit segment from a quaternion + its security term, shaped by a waveguide.
+ *
+ *  LEFT half = partial hexagon (memory, 3/6 sides)
+ *    dark  = security term projected onto this axis
+ *    light = quaternion value projected onto this axis
+ *
+ *  RIGHT half = partial triangle (facts, 1.5/3 sides)
+ *    dark  = security remainder (what left-dark didn't cover)
+ *    light = quaternion remainder
+ *
+ *  The waveguide's coupling mode scales the dark/light split:
+ *    More carriers → more light (observable), less dark (hidden)
+ *    Fewer carriers → more dark (security-heavy) */
+export function createBitSegment(
+  q: QuaternionIdentity,
+  sec: SecurityTerm,
+  guide: Waveguide,
+): BitSegment {
+  // Each axis carries an independent bit that closes to 2.
+  // The quaternion's projection onto this axis determines the signal strength.
+  // Axis 0→i, Axis 1→j, Axis 2→k, Axis 3→w
+  const components = [q.i, q.j, q.k, q.w];
+
+  // Signal strength: how much of the quaternion lives on this axis [0, 1]
+  const qComponent = Math.abs(components[guide.axisIndex]);
+  const signal = q.norm > 0.0001 ? qComponent / q.norm : 0.25;
+  // signal ∈ [0, 1] — fraction of identity on this axis
+
+  // Each axis has its own bit: light (value) + dark (proof) = 2
+  const lightTotal = signal + (1 - signal) * HOST_SHARE;  // φ-biased toward light
+  const darkTotal = 2 - lightTotal;                        // complement closes to 2
+
+  // Coupling mode shapes the left/right distribution
+  // More carriers → more even split; fewer → asymmetric (hex-heavy)
+  const carrierRatio = guide.coupling.carriers.length / 3; // 2/3 or 3/3
+  const hexWeight = HOST_SHARE + (1 - carrierRatio) * COLONY_SHARE;
+  // hexWeight for 2 carriers ≈ 0.745, for 3 carriers ≈ 0.618
+
+  // LEFT half: partial hexagon (memory) — weighted by coupling
+  const leftLight = lightTotal * hexWeight;
+  const leftDark = darkTotal * (1 - hexWeight);
+
+  // RIGHT half: partial triangle (facts) — the complement
+  const rightLight = lightTotal * (1 - hexWeight);
+  const rightDark = darkTotal * hexWeight;
+
+  const left: BitHalf = {
+    dark: leftDark,
+    light: leftLight,
+    shape: "hexagon",
+    side: "left",
+  };
+
+  const right: BitHalf = {
+    dark: rightDark,
+    light: rightLight,
+    shape: "triangle",
+    side: "right",
+  };
+
+  const bitValue = leftLight + rightLight;
+  const closure = leftDark + leftLight + rightDark + rightLight;
+  const bitError = Math.abs(2 - closure);
+
+  return {
+    left,
+    right,
+    waveguide: guide,
+    bitValue,
+    closure,
+    verified: bitError < DELTA,
+  };
+}
+
 // ── Demo ──────────────────────────────────────────────────────────────────
 
 function fmt(n: number, d: number = 3): string { return n.toFixed(d); }
@@ -1237,6 +1417,50 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    rotated by hardware theta -- only the real system knows the scars.`);
     console.log(`    Norm closes to 2 (anyone can compute). Direction verifies WHO (only you).`);
     console.log(`    2 = one fully verified bit. 1 = half a bit (unverified). 0 = void.`);
+    console.log();
+
+    // ── Waveguide demo ──────────────────────────────────────────────
+    console.log("  WAVEGUIDE SYSTEM (bit segments through coupling axes):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    // Build waveguides for each axis
+    const guides = buildWaveguides();
+    for (const g of guides) {
+      console.log(`    Axis ${g.axisIndex}: ${AXIS_LABELS[g.axisIndex]}`);
+      console.log(`      coupling: ${g.coupling.carriers.join("+")} (${g.coupling.name})`);
+      console.log(`      impedance: ${fmt(g.coupling.impedance, 5)}`);
+      console.log();
+    }
+
+    // Simulate a bit segment traveling through each waveguide
+    console.log("  BIT SEGMENTS (dark/light halves through waveguides):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    for (const g of guides) {
+      // Create a test bit segment from the identity quaternion
+      const seg = createBitSegment(q, sched.securityTermFor(q.norm), g);
+      console.log(`    Axis ${g.axisIndex} [${g.coupling.name}]:`);
+      console.log(`      LEFT  half: dark=${fmt(seg.left.dark, 5)} light=${fmt(seg.left.light, 5)} shape=${seg.left.shape}`);
+      console.log(`      RIGHT half: dark=${fmt(seg.right.dark, 5)} light=${fmt(seg.right.light, 5)} shape=${seg.right.shape}`);
+      console.log(`      bit value:  ${fmt(seg.bitValue, 5)} (left+right=${fmt(seg.left.dark + seg.left.light + seg.right.dark + seg.right.light, 5)})`);
+      console.log(`      closure:    ${fmt(seg.closure, 5)} (target: 2.00000) ${seg.verified ? "IS" : "ISNT"}`);
+      console.log();
+    }
+
+    // Show how coupling type affects transport
+    console.log("  COUPLING PHYSICS:");
+    console.log("  " + "-".repeat(66));
+    console.log(`    LASER + EMP   = precision x disruption  (axis 0: survival)`);
+    console.log(`    LASER + SOUND = coherence x pressure    (axis 1: structure)`);
+    console.log(`    SOUND + EMP   = resonance x field       (axis 2: exploration)`);
+    console.log(`    ALL THREE     = full spectrum bridge     (axis 3: governance)`);
+    console.log();
+    console.log(`    Partial hexagon (memory, 3/6 sides) + partial triangle (facts, 1.5/3 sides)`);
+    console.log(`    = one bit segment. Two halves, each with dark and light paths.`);
+    console.log(`    Dark paths carry the security complement. Light paths carry the value.`);
+    console.log(`    Together: dark + light = 2 (one verified bit per segment).`);
     console.log();
   }
 }
