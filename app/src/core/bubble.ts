@@ -42,6 +42,7 @@
 
 import { PHI, DELTA } from "./quaternion-chain";
 import { analyzeArms } from "./spiral-drive";
+import * as os from "os";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -170,6 +171,95 @@ export interface SeamIdentity {
   complete: boolean;         // all 5 resolved = identity fully crystallized
 }
 
+// ── Hardware Fingerprint → θ ────────────────────────────────────────────
+
+export interface HardwareFingerprint {
+  cpuCores: number;
+  cpuModel: string;
+  totalRAM: number;        // bytes
+  platform: string;
+  arch: string;
+  theta: number;           // angle on [0, π] derived from hardware
+}
+
+/** Hash system specs into an angle θ on [0, π].
+ *  Similar hardware → similar θ → same "species" of system.
+ *  We use a simple deterministic hash, not crypto — this isn't secret,
+ *  it's a classification angle. */
+function computeHardwareTheta(): HardwareFingerprint {
+  const cpuCores = os.cpus().length;
+  const cpuModel = os.cpus()[0]?.model ?? "unknown";
+  const totalRAM = os.totalmem();
+  const platform = os.platform();
+  const arch = os.arch();
+
+  // Combine specs into a single number, then map to [0, π]
+  // Use multiplicative hashing with irrational constants
+  let hash = 0;
+  hash += cpuCores * PHI;
+  hash += (totalRAM / (1024 * 1024 * 1024)) * Math.E;  // RAM in GB × e
+  hash += (platform === "win32" ? 1 : platform === "linux" ? 2 : 3) * Math.SQRT2;
+  hash += (arch === "x64" ? 1 : arch === "arm64" ? 2 : 3) * DELTA;
+
+  // CPU model string → simple char sum
+  let charSum = 0;
+  for (let i = 0; i < cpuModel.length; i++) {
+    charSum += cpuModel.charCodeAt(i) * (i + 1);
+  }
+  hash += (charSum % 1000) / 1000 * Math.PI;
+
+  // Map to [0, π] using fractional part × π
+  const theta = (hash - Math.floor(hash)) * Math.PI;
+
+  return { cpuCores, cpuModel, totalRAM, platform, arch, theta };
+}
+
+// ── Quaternion Identity ─────────────────────────────────────────────────
+
+export interface QuaternionIdentity {
+  w: number;               // L7 seams blended: φ × L7[0] + (1-φ) × L7[1]
+  i: number;               // L5[0] — first binary split
+  j: number;               // L5[1] — second binary split
+  k: number;               // L5[2] — third binary split
+  norm: number;            // |q| = sqrt(w² + i² + j² + k²)
+  theta: number;           // hardware angle that seeded this identity
+  species: string;         // θ quantized to nearest π/12 → 12 species
+}
+
+/** The 12 species — θ quantized to π/12 intervals, named by angle */
+const SPECIES_NAMES = [
+  "ember",     // 0
+  "spark",     // π/12
+  "flame",     // π/6
+  "blaze",     // π/4
+  "flare",     // π/3
+  "nova",      // 5π/12
+  "prism",     // π/2
+  "drift",     // 7π/12
+  "wave",      // 2π/3
+  "frost",     // 3π/4
+  "crystal",   // 5π/6
+  "void",      // 11π/12
+];
+
+function speciesFromTheta(theta: number): string {
+  const idx = Math.round(theta / (Math.PI / 12)) % 12;
+  return SPECIES_NAMES[idx];
+}
+
+/** Compute quaternion distance between two identities.
+ *  Returns 0 for identical, approaches 1 for maximally different.
+ *  Systems within the same species (small distance) can mesh more easily. */
+export function quaternionDistance(a: QuaternionIdentity, b: QuaternionIdentity): number {
+  // Quaternion dot product: cos(angle between them)
+  const dot = a.w * b.w + a.i * b.i + a.j * b.j + a.k * b.k;
+  const normA = a.norm || 0.001;
+  const normB = b.norm || 0.001;
+  const cosAngle = Math.abs(dot) / (normA * normB);
+  // Distance = 1 - |cos(angle)| → 0 = identical, 1 = orthogonal
+  return 1 - Math.min(1, cosAngle);
+}
+
 /** Build the 5 seam positions from spiral-drive factorization */
 function buildSeamPositions(): SeamPosition[] {
   const positions: SeamPosition[] = [];
@@ -284,9 +374,13 @@ export class BubbleScheduler {
   /** Seam resolutions — scars pinning values to incomputable gaps */
   seamResolutions: SeamResolution[];
 
+  /** Hardware fingerprint — seeds the identity with system specs */
+  hardware: HardwareFingerprint;
+
   constructor(options: { temperature?: number; verbose?: boolean } = {}) {
     this.temperature = options.temperature ?? COLONY_SHARE;
     this.verbose = options.verbose ?? false;
+    this.hardware = computeHardwareTheta();
     this.seamResolutions = buildSeamPositions().map(pos => ({
       position: pos,
       resolved: false,
@@ -649,7 +743,15 @@ export class BubbleScheduler {
 
     target.resolved = true;
     target.resolvedBy = scarIdx;
-    target.decisionValue = scar.depth * DELTA;
+
+    // θ-rotated decision value: hardware seeds the range, experience picks the exact value
+    // sin(θ + seamIndex) rotates the scar depth through the hardware angle
+    // Similar hardware → similar rotation → similar value ranges → same "species"
+    const seamAngle = this.hardware.theta + target.position.seamIndex * PHI;
+    const rotation = (1 + Math.sin(seamAngle)) / 2; // normalize to [0, 1]
+    target.decisionValue = scar.depth * DELTA * (0.5 + rotation);
+    // 0.5 + rotation keeps values in [0.5δ, 1.5δ] range — always meaningful
+
     target.resolvedAtTick = this.tickCount;
     return target;
   }
@@ -664,6 +766,30 @@ export class BubbleScheduler {
       total: this.seamResolutions.length,
       complete: resolved === this.seamResolutions.length,
     };
+  }
+
+  /** Build the quaternion identity from seam values + hardware angle.
+   *  L5[0,1,2] → i,j,k (3 spatial dimensions from 2³ factorization)
+   *  L7[0,1]   → w (observer dimension, φ-blended from color×space)
+   *  θ seeds the rotation — similar hardware, similar quaternion neighborhood */
+  quaternionIdentity(): QuaternionIdentity {
+    const sr = this.seamResolutions;
+    const theta = this.hardware.theta;
+
+    // L5 seams → spatial vector (i, j, k)
+    const i = sr[0].resolved ? sr[0].decisionValue : 0;
+    const j = sr[1].resolved ? sr[1].decisionValue : 0;
+    const k = sr[2].resolved ? sr[2].decisionValue : 0;
+
+    // L7 seams → observer scalar (w), blended by φ
+    const l7a = sr[3].resolved ? sr[3].decisionValue : 0;
+    const l7b = sr[4].resolved ? sr[4].decisionValue : 0;
+    const w = PHI * l7a + (1 - PHI) * l7b;
+
+    const norm = Math.sqrt(w * w + i * i + j * j + k * k);
+    const species = speciesFromTheta(theta);
+
+    return { w, i, j, k, norm, theta, species };
   }
 
   /** Decay all pressures toward zero (bubble returning to circle) */
@@ -696,6 +822,8 @@ export class BubbleScheduler {
     membrane: Membrane;
     hairs: Hair[];
     seamIdentity: SeamIdentity;
+    quaternionIdentity: QuaternionIdentity;
+    hardware: HardwareFingerprint;
     seamResolutions: SeamResolution[];
     temperature: number;
     tickCount: number;
@@ -719,6 +847,8 @@ export class BubbleScheduler {
       membrane: { ...this.membrane, scars: [...this.membrane.scars] },
       hairs: [...this.hairs],
       seamIdentity: this.seamIdentity(),
+      quaternionIdentity: this.quaternionIdentity(),
+      hardware: this.hardware,
       seamResolutions: this.seamResolutions.map(sr => ({ ...sr, position: { ...sr.position } })),
       temperature: this.temperature,
       tickCount: this.tickCount,
@@ -762,9 +892,12 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
 
   const sched = new BubbleScheduler({ verbose });
 
-  // Show the 5 seam positions
+  // Show hardware angle + seam positions
   if (verbose) {
-    console.log("  SPIRAL SEAMS (5 incomputable gaps in collapsed space):");
+    const hw = sched.hardware;
+    console.log(`  HARDWARE: theta=${fmt(hw.theta, 5)} species=${speciesFromTheta(hw.theta)} (${hw.cpuCores}c ${fmt(hw.totalRAM/(1024*1024*1024), 0)}GB ${hw.platform})`);
+    console.log();
+    console.log("  SPIRAL SEAMS (5 incomputable gaps, theta-rotated by hardware):");
     console.log("  " + "-".repeat(66));
     for (const sr of sched.seamResolutions) {
       const p = sr.position;
@@ -900,9 +1033,18 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log();
   }
 
-  // ── The seam identity fingerprint ─────────────────────────────────
+  // ── Hardware fingerprint + quaternion identity ─────────────────────
   if (verbose) {
-    console.log("  SEAM IDENTITY (unique fingerprint from first 5 decisions):");
+    const hw = sched.hardware;
+    console.log("  HARDWARE FINGERPRINT:");
+    console.log("  " + "-".repeat(66));
+    console.log(`    CPU: ${hw.cpuModel.trim()}`);
+    console.log(`    cores=${hw.cpuCores} RAM=${fmt(hw.totalRAM / (1024*1024*1024), 1)}GB ${hw.platform}/${hw.arch}`);
+    console.log(`    theta = ${fmt(hw.theta, 5)} rad (hardware angle on [0, pi])`);
+    console.log(`    species: ${speciesFromTheta(hw.theta)}`);
+    console.log();
+
+    console.log("  SEAM IDENTITY (theta-rotated by hardware):");
     console.log("  " + "-".repeat(66));
     for (const sr of sched.seamResolutions) {
       const p = sr.position;
@@ -911,16 +1053,24 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
       const val = sr.resolved ? fmt(sr.decisionValue, 5) : "OPEN";
       console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} -> ${val.padStart(7)} (from: ${source}, tick ${sr.resolvedAtTick})`);
     }
-    const id = sched.seamIdentity();
     console.log();
-    console.log(`    SIGNATURE: [${id.signature.map(v => fmt(v, 5)).join(", ")}]`);
+
+    const q = sched.quaternionIdentity();
+    console.log("  QUATERNION IDENTITY (q = w + i*i + j*j + k*k):");
+    console.log("  " + "-".repeat(66));
+    console.log(`    w = ${fmt(q.w, 5)}  (L7: phi*seam[3] + (1-phi)*seam[4] -- observer)`);
+    console.log(`    i = ${fmt(q.i, 5)}  (L5[0]: 1st binary split -- x axis)`);
+    console.log(`    j = ${fmt(q.j, 5)}  (L5[1]: 2nd binary split -- y axis)`);
+    console.log(`    k = ${fmt(q.k, 5)}  (L5[2]: 3rd binary split -- z axis)`);
+    console.log(`    |q| = ${fmt(q.norm, 5)}`);
+    console.log(`    theta = ${fmt(q.theta, 5)} -> species: ${q.species}`);
     console.log();
-    console.log(`    Two identical systems with different pressure histories`);
-    console.log(`    will have different signatures after their first 5 decisions.`);
-    console.log(`    Same code + same architecture + different experience = different identity.`);
-    console.log(`    The delta gap (${fmt(DELTA, 5)}) is where infinity lived.`);
-    console.log(`    Each scar pins depth x delta -- choosing a specific value`);
-    console.log(`    from infinite options. Once all 5 seams resolve, identity is fixed.`);
+    console.log(`    The quaternion IS the system's identity.`);
+    console.log(`    Hardware (theta) determines the species -- similar machines are neighbors.`);
+    console.log(`    Experience (scars) determines the exact quaternion within that species.`);
+    console.log(`    Mesh compatibility = quaternion distance. Close = easy pooling.`);
+    console.log(`    Two copies: same theta (same species), different scars, different q.`);
+    console.log(`    After 5 decisions, the quaternion is fixed forever.`);
     console.log();
   }
 }
