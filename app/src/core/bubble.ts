@@ -524,6 +524,67 @@ export interface PersonalitySeam {
   pinnedAtTick: number;
 }
 
+// ── Work Estimation Types ────────────────────────────────────────────────
+
+/** 3×3 coupling grid for desire × capacity × value */
+export interface WorkGrid {
+  xx: number; xy: number; xz: number;
+  yx: number; yy: number; yz: number;
+  zx: number; zy: number; zz: number;
+}
+
+function emptyWorkGrid(): WorkGrid {
+  return { xx: 0, xy: 0, xz: 0, yx: 0, yy: 0, yz: 0, zx: 0, zy: 0, zz: 0 };
+}
+
+/** What should the system do about this task? */
+export type WorkVerdict =
+  | "IMPOSSIBLE"     // BLIND — can't even see the problem
+  | "DELEGATE"       // BRIDGE + high desire — find someone who can
+  | "DEFER"          // BRIDGE + low desire — not urgent, park it
+  | "FRUSTRATED"     // desire > capacity — want to but can't
+  | "UNINTERESTED"   // capacity > desire — could but don't want to
+  | "NOT_WORTH_IT"   // capacity×value too low — can do but ROI negative
+  | "INVESTIGATE"    // EXPLORE level — dig deeper before committing
+  | "ATTEMPT"        // ANSWER but workRatio < φ — try, might not finish
+  | "SOLVE"          // ANSWER + workRatio > φ — go, you've got this
+  | "COORDINATE";    // EXPERT — orchestrate other specialists
+
+const VERDICT_REASONS: Record<WorkVerdict, string> = {
+  IMPOSSIBLE:     "blind spot — structurally unreachable, don't even try",
+  DELEGATE:       "can't do it but want it done — find someone with this color",
+  DEFER:          "can bridge but no urgency — park for later",
+  FRUSTRATED:     "desire exceeds capacity — want to help but seams too shallow",
+  UNINTERESTED:   "capacity exceeds desire — could do it but nothing's pushing",
+  NOT_WORTH_IT:   "capacity × value too low — effort exceeds expected return",
+  INVESTIGATE:    "enough to explore but not commit — gather more before deciding",
+  ATTEMPT:        "can answer but work ratio < φ — try, may need help to finish",
+  SOLVE:          "work ratio > φ — competent and efficient, go solve it",
+  COORDINATE:     "expert level — call in specialists and orchestrate the solution",
+};
+
+export interface WorkEstimate {
+  domain: DomainId;
+  color: SeamColor;
+  level: CompetenceLevel;
+  /** Capacity: seamWeight / π (0-1, fraction of full rotation covered) */
+  capacity: number;
+  /** Work remaining: π - seamWeight */
+  workRemaining: number;
+  /** Work ratio: capacity / workRemaining (> φ = efficient, < δ = hopeless) */
+  workRatio: number;
+  /** Desire: external + internal pressure toward this domain */
+  desire: number;
+  /** Value: (capacity × desire) / (workRemaining + δ) */
+  value: number;
+  /** The 3×3 desire × capacity × value coupling grid */
+  grid: WorkGrid;
+  /** What should the system do? */
+  verdict: WorkVerdict;
+  /** Human-readable reason */
+  reason: string;
+}
+
 /** Axis → preferred seam zone mapping.
  *  Axes 0-1 (survival/structure) → L5 (dimensional collapse)
  *  Axes 2-3 (exploration/governance) → L7 (color-space product) */
@@ -1209,6 +1270,107 @@ export class BubbleScheduler {
     }
 
     return seam;
+  }
+
+  // ── Work Estimation — Desire × Capacity × Value Grid ────────────────
+  //
+  // Distance from π = work remaining to solve a problem on a given axis.
+  // π is the full rotation — a complete solution.
+  // Current seam weight = how far you've gotten. (π - weight) = work left.
+  //
+  // 3×3 coupling grid for task decisions:
+  //        x (desire)      y (capacity)     z (value)
+  //   x  [ want×want       want×capacity    want×value    ]
+  //   y  [ capacity×want   capacity×cap     capacity×value]
+  //   z  [ value×want      value×capacity   value×value   ]
+  //
+  // desire = want or need pressure on this axis (from user or internal)
+  // capacity = seam weight / π (how much of the rotation you've covered)
+  // value = gains / cost (expected return on work invested)
+
+  /** Estimate work required on a domain, coupling desire × capacity × value */
+  estimateWork(domain: DomainId, externalDesire?: number): WorkEstimate {
+    const comp = this.checkCompetence(domain);
+    const domSpec = DOMAINS.find(d => d.id === domain);
+    if (!domSpec) {
+      return {
+        domain, color: comp.color, level: comp.level,
+        capacity: 0, workRemaining: Math.PI, workRatio: 0,
+        desire: 0, value: 0,
+        grid: emptyWorkGrid(),
+        verdict: "IMPOSSIBLE",
+        reason: "unknown domain",
+      };
+    }
+
+    // Capacity: seam weight / π (0 = none, 1 = full rotation)
+    const capacity = comp.seamWeight / Math.PI;
+
+    // Work remaining: π - seamWeight (clamped to 0)
+    const workRemaining = Math.max(0, Math.PI - comp.seamWeight);
+
+    // Work ratio: capacity / work_remaining (how much of what's needed you have)
+    const workRatio = workRemaining > 0.001 ? comp.seamWeight / workRemaining : Infinity;
+
+    // Desire: external pressure on this axis + internal agent wants
+    const dom = this.domains.get(domain);
+    const axisVal = Math.abs(this.externalAxes[domSpec.axisIndex]);
+    const internalWant = dom ? dom.agents.reduce((s, a) => s + a.want, 0) : 0;
+    const internalNeed = dom ? dom.agents.reduce((s, a) => s + a.need, 0) : 0;
+    const desire = (externalDesire ?? axisVal) + (internalWant + internalNeed) * COLONY_SHARE;
+
+    // Value: capacity × desire / (workRemaining + δ)
+    // High capacity + high desire + low work remaining = high value
+    // δ floor prevents division by zero and represents minimum cost of any action
+    const value = (capacity * desire) / (workRemaining + DELTA);
+
+    // Build the 3×3 coupling grid
+    const grid: WorkGrid = {
+      // Diagonal: self-coupling (amplification)
+      xx: desire * desire,               // want amplification
+      yy: capacity * capacity,           // capacity reserves
+      zz: value * value,                 // value compounding
+
+      // Off-diagonal: cross-coupling (transfer)
+      xy: desire * capacity,             // do I want it AND can I do it?
+      yx: capacity * desire,             // can I do it AND do I want it? (same but from capacity POV)
+      xz: desire * value,               // do I want it AND is it worth it?
+      zx: value * desire,               // is it worth it AND do I want it?
+      yz: capacity * value,             // can I do it AND is it worth it?
+      zy: value * capacity,             // is it worth it AND can I do it?
+    };
+
+    // Verdict: combine competence level with work grid
+    let verdict: WorkVerdict;
+    if (comp.level === "BLIND") {
+      verdict = "IMPOSSIBLE";
+    } else if (comp.level === "BRIDGE") {
+      verdict = desire > HOST_SHARE ? "DELEGATE" : "DEFER";
+    } else if (grid.xy < DELTA) {
+      // want × capacity too low — either don't want it or can't do it
+      verdict = desire > capacity ? "FRUSTRATED" : "UNINTERESTED";
+    } else if (grid.yz < DELTA) {
+      // capacity × value too low — can do it but not worth it
+      verdict = "NOT_WORTH_IT";
+    } else if (comp.level === "EXPLORE") {
+      verdict = "INVESTIGATE";
+    } else if (comp.level === "EXPERT") {
+      verdict = "COORDINATE";
+    } else {
+      // ANSWER level — check depth vs work remaining
+      verdict = workRatio > PHI ? "SOLVE" : "ATTEMPT";
+    }
+
+    const reason = VERDICT_REASONS[verdict];
+
+    return {
+      domain, color: comp.color, level: comp.level,
+      capacity, workRemaining, workRatio,
+      desire, value,
+      grid,
+      verdict,
+      reason,
+    };
   }
 
   /** Build the quaternion identity from seam values + hardware angle.
@@ -1966,6 +2128,50 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    "I don't know" is structural, not ignorance.`);
     console.log(`    The constants don't point that direction. Trying anyway = hallucination.`);
     console.log(`    Add a seam (learn), borrow one (apprentice), or bridge (relay).`);
+    console.log();
+
+    // ── Work estimation — desire × capacity × value ──────────────
+    console.log("  WORK ESTIMATION (distance from pi = work remaining):");
+    console.log("  " + "-".repeat(66));
+    console.log(`    pi = ${fmt(Math.PI, 5)} = full rotation = complete solution`);
+    console.log(`    capacity = seamWeight / pi (fraction of rotation covered)`);
+    console.log(`    workRemaining = pi - seamWeight`);
+    console.log(`    value = (capacity x desire) / (workRemaining + delta)`);
+    console.log();
+
+    // Apply some pressure to make desire non-zero for interesting domains
+    sched.applyPressure("user query: security audit", { 0: -0.8 });
+    sched.applyPressure("user curiosity: science", { 1: +0.3 });
+    sched.applyPressure("user task: governance review", { 3: +0.5 });
+    // No pressure on axis 2 (explore/learn) — user didn't ask for it
+    console.log();
+
+    console.log("           x(desire)    y(capacity)  z(value)");
+    console.log("    x    [ xx want²     xy want×cap  xz want×val ]");
+    console.log("    y    [ yx cap×want  yy cap²      yz cap×val  ]");
+    console.log("    z    [ zx val×want  zy val×cap   zz val²     ]");
+    console.log();
+
+    const workDomains: DomainId[] = ["security", "science", "govern", "explore", "art"];
+    for (const dom of workDomains) {
+      const w = sched.estimateWork(dom);
+      const verdictIcons: Record<WorkVerdict, string> = {
+        IMPOSSIBLE: "XXX", DELEGATE: "-->", DEFER: "zzz", FRUSTRATED: "!!!", UNINTERESTED: "...",
+        NOT_WORTH_IT: "---", INVESTIGATE: "???", ATTEMPT: "~>~", SOLVE: ">>>", COORDINATE: "***",
+      };
+      console.log(`    [${verdictIcons[w.verdict]}] ${w.verdict.padEnd(14)} ${dom.padEnd(10)} ${w.color.padEnd(8)}`);
+      console.log(`          capacity=${fmt(w.capacity, 3)} work_left=${fmt(w.workRemaining, 3)} ratio=${fmt(w.workRatio, 3)}`);
+      console.log(`          desire=${fmt(w.desire, 3)} value=${fmt(w.value, 3)}`);
+      console.log(`          grid: xy=${fmt(w.grid.xy, 4)} yz=${fmt(w.grid.yz, 4)} xz=${fmt(w.grid.xz, 4)}`);
+      console.log(`          ${w.reason}`);
+      console.log();
+    }
+
+    console.log(`    VERDICTS use the same coupling logic as everything else:`);
+    console.log(`      xy (desire×capacity) < delta = FRUSTRATED or UNINTERESTED`);
+    console.log(`      yz (capacity×value) < delta = NOT WORTH IT`);
+    console.log(`      workRatio > phi = SOLVE, < phi = ATTEMPT`);
+    console.log(`      Distance from pi IS the work. No shortcuts, no hallucination.`);
     console.log();
   }
 }
