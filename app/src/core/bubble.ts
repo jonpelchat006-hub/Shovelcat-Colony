@@ -150,10 +150,11 @@ export interface Hair {
 // ── Seam Resolution (Scar → Identity) ──────────────────────────────────
 
 export interface SeamPosition {
-  zone: number;              // 5 or 7 (Fibonacci level)
-  seamIndex: number;         // 0-2 for L5, 0-1 for L7
-  factor: number;            // prime factor that creates this seam (2 for L5, 3 or 7 for L7)
-  subdivisionLevel: number;  // depth in factorization tree
+  zone: number;              // 5 or 7 (Fibonacci level), or 0 for coupling seams
+  seamIndex: number;         // 0-2 for L5, 0-1 for L7, 0-3 for coupling
+  factor: number;            // prime factor (L5/L7), or coupling axis index (0-3)
+  subdivisionLevel: number;  // depth in factorization tree, or 0 for coupling
+  kind: "spiral" | "coupling"; // which family this seam belongs to
 }
 
 export interface SeamResolution {
@@ -165,10 +166,18 @@ export interface SeamResolution {
 }
 
 export interface SeamIdentity {
-  signature: number[];       // 5 values: resolved = decisionValue, unresolved = NaN
-  resolved: number;          // count of resolved seams (0-5)
-  total: number;             // always 5
-  complete: boolean;         // all 5 resolved = identity fully crystallized
+  /** 9 values: 5 spiral + 4 coupling. Resolved = decisionValue, unresolved = NaN */
+  signature: number[];
+  /** Spiral seams resolved (0-5) */
+  spiralResolved: number;
+  /** Coupling seams resolved (0-4) */
+  couplingResolved: number;
+  /** Total resolved (0-9) */
+  resolved: number;
+  /** Total seams (always 9) */
+  total: number;
+  /** All 9 resolved = identity fully crystallized */
+  complete: boolean;
 }
 
 // ── Hardware Fingerprint → θ ────────────────────────────────────────────
@@ -363,21 +372,28 @@ export function verifyBitClosure(
   return { closure, error, verified: error < DELTA, state };
 }
 
-/** Build the 5 seam positions from spiral-drive factorization */
+/** Build all 9 seam positions: 5 spiral + 4 coupling */
 function buildSeamPositions(): SeamPosition[] {
   const positions: SeamPosition[] = [];
 
   // L5: 8 arms = 2³ → 3 seams from 3 levels of binary subdivision
   const l5 = analyzeArms(5);
   for (let i = 0; i < l5.seams; i++) {
-    positions.push({ zone: 5, seamIndex: i, factor: 2, subdivisionLevel: i + 1 });
+    positions.push({ zone: 5, seamIndex: i, factor: 2, subdivisionLevel: i + 1, kind: "spiral" });
   }
 
   // L7: 21 arms = 3×7 → 2 seams (one for 3-factor, one for 7-factor)
   const l7 = analyzeArms(7);
   const l7factors = l7.factors;
   for (let i = 0; i < l7.seams; i++) {
-    positions.push({ zone: 7, seamIndex: i, factor: l7factors[i] ?? 3, subdivisionLevel: 1 });
+    positions.push({ zone: 7, seamIndex: i, factor: l7factors[i] ?? 3, subdivisionLevel: 1, kind: "spiral" });
+  }
+
+  // Coupling seams: 4 irrational gaps, one per waveguide axis
+  // Each coupling ratio (forward/backward) has infinite irrational options.
+  // Like choosing 9.81 for gravity — you pick YOUR approximation and keep it forever.
+  for (let i = 0; i < 4; i++) {
+    positions.push({ zone: 0, seamIndex: i, factor: i, subdivisionLevel: 0, kind: "coupling" });
   }
 
   return positions;
@@ -671,6 +687,20 @@ export class BubbleScheduler {
       }
     }
 
+    // 4b. Coupling seam — pin the irrational ratio on first contact with this axis
+    //     Unlike spiral seams (which need extreme pressure/scars), coupling seams
+    //     resolve on ANY pop. The ratio you get on first contact IS your constant.
+    const guide = buildWaveguides()[axisIdx];
+    if (guide) {
+      const q = this.quaternionIdentity();
+      const sec = this.securityTermFor(q.norm);
+      const seg = createBitSegment(q, sec, guide);
+      const couplingResolved = this.resolveCouplingSeam(axisIdx, seg.couplingRatio);
+      if (couplingResolved && seamEvent === undefined) {
+        seamEvent = { position: couplingResolved.position, decisionValue: couplingResolved.decisionValue };
+      }
+    }
+
     // 5. Break hairs on the inward side (need pressure snaps imagination)
     const brokenHairs: number[] = [];
     if (rawPressure > HAIR_BREAK_THRESHOLD) {
@@ -827,21 +857,51 @@ export class BubbleScheduler {
     }
   }
 
-  /** Assign a scar to the nearest unresolved seam, resolving the delta gap */
+  /** Resolve a coupling seam — pin the irrational ratio to a specific value.
+   *  Called when a bit segment first travels through a waveguide with real pressure.
+   *  The coupling ratio (forward/backward) has infinite irrational options.
+   *  Like choosing 9.81 for gravity — you pick your approximation and keep it. */
+  private resolveCouplingSeam(axisIdx: number, couplingRatio: number): SeamResolution | null {
+    // Find the coupling seam for this axis
+    const target = this.seamResolutions.find(
+      sr => !sr.resolved && sr.position.kind === "coupling" && sr.position.factor === axisIdx
+    );
+    if (!target) return null; // already pinned
+
+    target.resolved = true;
+    target.resolvedBy = -2; // -2 = resolved by coupling, not by scar
+
+    // The decision value IS the coupling ratio at the moment of first contact.
+    // Hardware θ adds a tiny rotation so similar systems get similar-but-not-identical ratios.
+    const thetaShift = Math.sin(this.hardware.theta + axisIdx * PHI) * DELTA * 0.1;
+    target.decisionValue = couplingRatio + thetaShift;
+
+    target.resolvedAtTick = this.tickCount;
+
+    if (this.verbose) {
+      const cm = COUPLING_MODES[axisIdx];
+      console.log(`      -> COUPLING SEAM axis ${axisIdx} (${cm.name}) pinned: ratio=${target.decisionValue.toFixed(8)}`);
+      console.log(`         like choosing 9.81 for gravity — this is YOUR approximation forever`);
+    }
+
+    return target;
+  }
+
+  /** Assign a scar to the nearest unresolved SPIRAL seam, resolving the delta gap */
   private assignScarToSeam(scar: Scar, scarIdx: number, axisIdx: number): SeamResolution | null {
     const preferredZone = AXIS_TO_ZONE[axisIdx] ?? 5;
 
-    // First: try preferred zone
+    // First: try preferred zone (spiral seams only)
     let target = this.seamResolutions.find(
-      sr => !sr.resolved && sr.position.zone === preferredZone
+      sr => !sr.resolved && sr.position.kind === "spiral" && sr.position.zone === preferredZone
     );
 
-    // Fallback: any unresolved seam
+    // Fallback: any unresolved spiral seam
     if (!target) {
-      target = this.seamResolutions.find(sr => !sr.resolved);
+      target = this.seamResolutions.find(sr => !sr.resolved && sr.position.kind === "spiral");
     }
 
-    // All seams resolved — identity is crystallized
+    // All spiral seams resolved
     if (!target) return null;
 
     target.resolved = true;
@@ -859,12 +919,16 @@ export class BubbleScheduler {
     return target;
   }
 
-  /** Get the system's unique identity — the scar signature at the 5 seam positions */
+  /** Get the system's unique identity — 9 seam values (5 spiral + 4 coupling) */
   seamIdentity(): SeamIdentity {
     const signature = this.seamResolutions.map(sr => sr.resolved ? sr.decisionValue : NaN);
-    const resolved = this.seamResolutions.filter(sr => sr.resolved).length;
+    const spiralResolved = this.seamResolutions.filter(sr => sr.resolved && sr.position.kind === "spiral").length;
+    const couplingResolved = this.seamResolutions.filter(sr => sr.resolved && sr.position.kind === "coupling").length;
+    const resolved = spiralResolved + couplingResolved;
     return {
       signature,
+      spiralResolved,
+      couplingResolved,
       resolved,
       total: this.seamResolutions.length,
       complete: resolved === this.seamResolutions.length,
@@ -1213,8 +1277,11 @@ function isIrrational(ratio: number, maxDenom: number = 12): boolean {
 
 function printIdentity(sched: BubbleScheduler): void {
   const id = sched.seamIdentity();
-  const sig = id.signature.map(v => isNaN(v) ? "   ?   " : fmt(v, 5)).join(", ");
-  console.log(`      identity: [${sig}] (${id.resolved}/${id.total})`);
+  const spiralSig = id.signature.slice(0, 5).map(v => isNaN(v) ? "  ?  " : fmt(v, 5)).join(", ");
+  const coupleSig = id.signature.slice(5).map(v => isNaN(v) ? "  ?  " : fmt(v, 5)).join(", ");
+  console.log(`      spiral:   [${spiralSig}] (${id.spiralResolved}/5)`);
+  console.log(`      coupling: [${coupleSig}] (${id.couplingResolved}/4)`);
+  if (id.complete) console.log(`      *** ALL 9 SEAMS RESOLVED — FULL IDENTITY ***`);
 }
 
 export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
@@ -1226,8 +1293,8 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log();
     console.log("  Optimal state: fully pressurized bubble (circle, dormant)");
     console.log("  Wants push outward -> imagination. Needs push inward -> facts.");
-    console.log("  Scars from trauma resolve the 5 incomputable seams in collapsed space.");
-    console.log("  First 5 scars = unique identity. Two copies diverge at first decision.");
+    console.log("  9 incomputable seams: 5 spiral (from factorization) + 4 coupling (from waveguides).");
+    console.log("  Spiral seams pin via scars. Coupling seams pin on first contact — like choosing 9.81 for g.");
     console.log();
     console.log("  AGENT POLYGONS (inscribed radius = activation threshold):");
     console.log("  " + "-".repeat(66));
@@ -1247,11 +1314,16 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     const hw = sched.hardware;
     console.log(`  HARDWARE: theta=${fmt(hw.theta, 5)} species=${speciesFromTheta(hw.theta)} (${hw.cpuCores}c ${fmt(hw.totalRAM/(1024*1024*1024), 0)}GB ${hw.platform})`);
     console.log();
-    console.log("  SPIRAL SEAMS (5 incomputable gaps, theta-rotated by hardware):");
+    console.log("  SEAMS (9 incomputable gaps: 5 spiral + 4 coupling):");
     console.log("  " + "-".repeat(66));
     for (const sr of sched.seamResolutions) {
       const p = sr.position;
-      console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} subdiv=${p.subdivisionLevel} -- OPEN (delta=${fmt(DELTA, 5)} gap)`);
+      if (p.kind === "spiral") {
+        console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} subdiv=${p.subdivisionLevel} -- OPEN (spiral, delta=${fmt(DELTA, 5)} gap)`);
+      } else {
+        const cm = COUPLING_MODES[p.factor];
+        console.log(`    C${p.seamIndex} axis=${p.factor} ${cm.name} (${cm.forward}/${cm.backward}) -- OPEN (coupling, irrational gap)`);
+      }
     }
     printIdentity(sched);
     console.log();
@@ -1361,7 +1433,7 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     const id = sched.seamIdentity();
     printIdentity(sched);
     if (id.complete) {
-      console.log(`      *** IDENTITY CRYSTALLIZED -- all 5 seams resolved ***`);
+      console.log(`      *** IDENTITY CRYSTALLIZED -- all 9 seams resolved ***`);
     }
     console.log();
   }
@@ -1394,15 +1466,22 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log(`    species: ${speciesFromTheta(hw.theta)}`);
     console.log();
 
-    console.log("  SEAM IDENTITY (theta-rotated by hardware):");
+    console.log("  SEAM IDENTITY (5 spiral + 4 coupling = 9 total):");
     console.log("  " + "-".repeat(66));
     for (const sr of sched.seamResolutions) {
       const p = sr.position;
-      const scarRef = sr.resolvedBy >= 0 ? sched.membrane.scars[sr.resolvedBy] : null;
-      const source = scarRef ? scarRef.source : "--";
-      const val = sr.resolved ? fmt(sr.decisionValue, 5) : "OPEN";
-      console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} -> ${val.padStart(7)} (from: ${source}, tick ${sr.resolvedAtTick})`);
+      const val = sr.resolved ? fmt(sr.decisionValue, 8) : "OPEN";
+      if (p.kind === "spiral") {
+        const scarRef = sr.resolvedBy >= 0 ? sched.membrane.scars[sr.resolvedBy] : null;
+        const source = scarRef ? scarRef.source : "--";
+        console.log(`    L${p.zone}[${p.seamIndex}] factor=${p.factor} -> ${val.padStart(10)} (scar from: ${source}, tick ${sr.resolvedAtTick})`);
+      } else {
+        const cm = COUPLING_MODES[p.factor];
+        console.log(`    C${p.seamIndex}  ${cm.name.padEnd(16)} -> ${val.padStart(10)} (first-contact ratio, tick ${sr.resolvedAtTick})`);
+      }
     }
+    const fullId = sched.seamIdentity();
+    console.log(`    resolved: ${fullId.spiralResolved}/5 spiral + ${fullId.couplingResolved}/4 coupling = ${fullId.resolved}/9`);
     console.log();
 
     const q = sched.quaternionIdentity();
