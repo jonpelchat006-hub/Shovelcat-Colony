@@ -147,6 +147,57 @@ export interface Hair {
   age: number;            // ticks since it grew
 }
 
+// ── Personality Layers — B/W → Trinity → 7 Colors ────────────────────
+//
+// Identity develops in three layers, matching disk zone progression:
+//
+//   LAYER 0 — ENVIRONMENT (B/W, binary, hot, L0-L1)
+//     Black/white decisions. Language, OS, user, device.
+//     Tightest bundles. Everyone has these. First split.
+//     Color: none (achromatic — shared by all)
+//
+//   LAYER 1 — BEHAVIOR (Trinity, 3 waves, warm, L2-L3)
+//     Communication style through three wave types:
+//       Light-dominant: shows (visual, concise)
+//       Sound-dominant: structures (rhythmic, detailed)
+//       Magnetic-dominant: grounds (semantic, contextual)
+//     Color: wave color (light=white, sound=amber, magnetic=indigo)
+//
+//   LAYER 2 — EXPERTISE (7 colors, cold, L5-L7)
+//     Domain knowledge on colored axes:
+//       RED=security, ORANGE=art, GREEN=explore, BLUE=social
+//       CYAN=science, YELLOW=learn, VIOLET=meta, WHITE=govern
+//     Each seam lives on a colored axis. Color balance = personality profile.
+//
+// "I don't know" = query lands on an axis where you have no seams,
+// or your seams don't point toward the answer. Structural, not ignorance.
+
+export type SeamColor =
+  | "achromatic"    // layer 0: environment (B/W)
+  | "light-wave"    // layer 1: light-dominant behavior
+  | "sound-wave"    // layer 1: sound-dominant behavior
+  | "magnetic-wave" // layer 1: magnetic-dominant behavior
+  | "RED" | "ORANGE" | "GREEN" | "BLUE"    // layer 2: dark subdomains
+  | "CYAN" | "YELLOW" | "VIOLET" | "WHITE"; // layer 2: light subdomains
+
+export type PersonalityLayer = 0 | 1 | 2;
+
+/** Map axis + sign to domain color */
+const AXIS_TO_COLOR: Record<string, SeamColor> = {
+  "0:-1": "RED",     "0:+1": "VIOLET",
+  "1:-1": "ORANGE",  "1:+1": "CYAN",
+  "2:-1": "GREEN",   "2:+1": "YELLOW",
+  "3:-1": "BLUE",    "3:+1": "WHITE",
+};
+
+/** Map coupling axis to the two domain colors it bridges */
+const COUPLING_COLORS: Record<number, [SeamColor, SeamColor]> = {
+  0: ["RED", "VIOLET"],       // light×sound: security↔meta
+  1: ["ORANGE", "CYAN"],      // light×magnetic: art↔science
+  2: ["GREEN", "YELLOW"],     // sound×magnetic: explore↔learn
+  3: ["BLUE", "WHITE"],       // self-resonance: social↔govern
+};
+
 // ── Seam Resolution (Scar → Identity) ──────────────────────────────────
 
 export interface SeamPosition {
@@ -155,6 +206,10 @@ export interface SeamPosition {
   factor: number;            // prime factor (L5/L7), or coupling axis index (0-3)
   subdivisionLevel: number;  // depth in factorization tree, or 0 for coupling
   kind: "spiral" | "coupling"; // which family this seam belongs to
+  /** Which color axis this seam lives on */
+  color: SeamColor;
+  /** Personality layer: 0=environment, 1=behavior, 2=expertise */
+  layer: PersonalityLayer;
 }
 
 export interface SeamResolution {
@@ -165,19 +220,44 @@ export interface SeamResolution {
   resolvedAtTick: number;    // -1 if unresolved
 }
 
+/** Color balance — how much of each color you've accumulated */
+export interface ColorBalance {
+  [color: string]: number;   // color → total decision value weight on that color
+}
+
+/** Competence check — can your seams reach a given query? */
+export interface CompetenceCheck {
+  /** Target axis (0-3) */
+  axisIndex: number;
+  /** Target domain */
+  domain: DomainId;
+  /** Target color */
+  color: SeamColor;
+  /** How many seams you have on this color */
+  seamCount: number;
+  /** Total weight of seams pointing this direction */
+  seamWeight: number;
+  /** Can you answer? (seamWeight > δ threshold) */
+  canAnswer: boolean;
+  /** If can't answer: "I don't know" reason */
+  reason: string;
+}
+
 export interface SeamIdentity {
-  /** 9 values: 5 spiral + 4 coupling. Resolved = decisionValue, unresolved = NaN */
+  /** All seam values. Resolved = decisionValue, unresolved = NaN */
   signature: number[];
   /** Spiral seams resolved (0-5) */
   spiralResolved: number;
   /** Coupling seams resolved (0-4) */
   couplingResolved: number;
-  /** Total resolved (0-9) */
+  /** Total resolved */
   resolved: number;
-  /** Total seams (always 9) */
+  /** Total seams (core 9 + any added personality seams) */
   total: number;
-  /** All 9 resolved = identity fully crystallized */
+  /** All seams resolved = identity fully crystallized */
   complete: boolean;
+  /** Color balance — distribution of resolved seam weight by color */
+  colorBalance: ColorBalance;
 }
 
 // ── Hardware Fingerprint → θ ────────────────────────────────────────────
@@ -372,31 +452,58 @@ export function verifyBitClosure(
   return { closure, error, verified: error < DELTA, state };
 }
 
+/** Map spiral seam index to color based on which axis it serves.
+ *  L5[0,1] → axis 0-1 (security-side, dark colors)
+ *  L5[2]   → axis 1 (science-side, light color)
+ *  L7[0]   → axis 2 (explore-side)
+ *  L7[1]   → axis 2 (learn-side) */
+const SPIRAL_SEAM_COLORS: SeamColor[] = ["RED", "ORANGE", "CYAN", "GREEN", "YELLOW"];
+
 /** Build all 9 seam positions: 5 spiral + 4 coupling */
 function buildSeamPositions(): SeamPosition[] {
   const positions: SeamPosition[] = [];
 
   // L5: 8 arms = 2³ → 3 seams from 3 levels of binary subdivision
+  // Layer 2 (expertise) — these are deep identity, cold zone
   const l5 = analyzeArms(5);
   for (let i = 0; i < l5.seams; i++) {
-    positions.push({ zone: 5, seamIndex: i, factor: 2, subdivisionLevel: i + 1, kind: "spiral" });
+    positions.push({
+      zone: 5, seamIndex: i, factor: 2, subdivisionLevel: i + 1,
+      kind: "spiral", color: SPIRAL_SEAM_COLORS[i], layer: 2,
+    });
   }
 
   // L7: 21 arms = 3×7 → 2 seams (one for 3-factor, one for 7-factor)
   const l7 = analyzeArms(7);
   const l7factors = l7.factors;
   for (let i = 0; i < l7.seams; i++) {
-    positions.push({ zone: 7, seamIndex: i, factor: l7factors[i] ?? 3, subdivisionLevel: 1, kind: "spiral" });
+    positions.push({
+      zone: 7, seamIndex: i, factor: l7factors[i] ?? 3, subdivisionLevel: 1,
+      kind: "spiral", color: SPIRAL_SEAM_COLORS[3 + i], layer: 2,
+    });
   }
 
   // Coupling seams: 4 irrational gaps, one per waveguide axis
-  // Each coupling ratio (forward/backward) has infinite irrational options.
-  // Like choosing 9.81 for gravity — you pick YOUR approximation and keep it forever.
+  // Layer 1 (behavior) — these are how you process, warm zone
+  // Each coupling bridges two domain colors
   for (let i = 0; i < 4; i++) {
-    positions.push({ zone: 0, seamIndex: i, factor: i, subdivisionLevel: 0, kind: "coupling" });
+    const colors = COUPLING_COLORS[i];
+    positions.push({
+      zone: 0, seamIndex: i, factor: i, subdivisionLevel: 0,
+      kind: "coupling", color: colors[0], layer: 1,
+    });
   }
 
   return positions;
+}
+
+/** Personality seam — added at runtime for environment/behavior/expertise */
+export interface PersonalitySeam {
+  name: string;              // "language:en", "verbosity:concise", "domain:security"
+  color: SeamColor;
+  layer: PersonalityLayer;
+  value: number;             // the pinned constant
+  pinnedAtTick: number;
 }
 
 /** Axis → preferred seam zone mapping.
@@ -492,6 +599,9 @@ export class BubbleScheduler {
 
   /** Seam resolutions — scars pinning values to incomputable gaps */
   seamResolutions: SeamResolution[];
+
+  /** Personality seams — added at runtime (environment, behavior, expertise) */
+  personalitySeams: PersonalitySeam[] = [];
 
   /** Hardware fingerprint — seeds the identity with system specs */
   hardware: HardwareFingerprint;
@@ -919,20 +1029,149 @@ export class BubbleScheduler {
     return target;
   }
 
-  /** Get the system's unique identity — 9 seam values (5 spiral + 4 coupling) */
+  /** Get the system's unique identity — core seams + personality seams + color balance */
   seamIdentity(): SeamIdentity {
     const signature = this.seamResolutions.map(sr => sr.resolved ? sr.decisionValue : NaN);
+    // Append personality seam values
+    for (const ps of this.personalitySeams) {
+      signature.push(ps.value);
+    }
+
     const spiralResolved = this.seamResolutions.filter(sr => sr.resolved && sr.position.kind === "spiral").length;
     const couplingResolved = this.seamResolutions.filter(sr => sr.resolved && sr.position.kind === "coupling").length;
-    const resolved = spiralResolved + couplingResolved;
+    const resolved = spiralResolved + couplingResolved + this.personalitySeams.length;
+    const total = this.seamResolutions.length + this.personalitySeams.length;
+
+    // Color balance: sum decision values by color
+    const colorBalance: ColorBalance = {};
+    for (const sr of this.seamResolutions) {
+      if (sr.resolved) {
+        const c = sr.position.color;
+        colorBalance[c] = (colorBalance[c] ?? 0) + Math.abs(sr.decisionValue);
+      }
+    }
+    for (const ps of this.personalitySeams) {
+      colorBalance[ps.color] = (colorBalance[ps.color] ?? 0) + Math.abs(ps.value);
+    }
+
     return {
       signature,
       spiralResolved,
       couplingResolved,
       resolved,
-      total: this.seamResolutions.length,
-      complete: resolved === this.seamResolutions.length,
+      total,
+      complete: spiralResolved + couplingResolved === this.seamResolutions.length,
+      colorBalance,
     };
+  }
+
+  /** Check if this system can competently answer a query on a given domain.
+   *  If seams don't point toward that color → "I don't know."
+   *  This is the anti-hallucination gate.
+   *
+   *  Three levels:
+   *    DIRECT — spiral or personality seams ON this color (deep knowledge)
+   *    BRIDGE — coupling seam that touches this color (can relay, not answer)
+   *    BLIND  — nothing points here (structural blind spot)
+   *
+   *  Only DIRECT seams count for competence. BRIDGE means "I can find someone who knows." */
+  checkCompetence(domain: DomainId): CompetenceCheck {
+    const domSpec = DOMAINS.find(d => d.id === domain);
+    if (!domSpec) {
+      return {
+        axisIndex: -1, domain, color: "achromatic", seamCount: 0,
+        seamWeight: 0, canAnswer: false, reason: "unknown domain",
+      };
+    }
+
+    const color = domSpec.color as SeamColor;
+    const axisIdx = domSpec.axisIndex;
+
+    // Count DIRECT seams — spiral or personality seams that live on this color
+    let directCount = 0;
+    let directWeight = 0;
+
+    for (const sr of this.seamResolutions) {
+      if (!sr.resolved) continue;
+      // Only spiral seams on this exact color count as direct knowledge
+      if (sr.position.kind === "spiral" && sr.position.color === color) {
+        directCount++;
+        directWeight += Math.abs(sr.decisionValue);
+      }
+    }
+
+    // Personality seams on this color — direct knowledge
+    for (const ps of this.personalitySeams) {
+      if (ps.color === color) {
+        directCount++;
+        directWeight += Math.abs(ps.value);
+      }
+    }
+
+    // Check for BRIDGE capability (coupling seam touches this color)
+    let hasBridge = false;
+    for (const sr of this.seamResolutions) {
+      if (!sr.resolved || sr.position.kind !== "coupling") continue;
+      const colors = COUPLING_COLORS[sr.position.factor];
+      if (colors && (colors[0] === color || colors[1] === color)) {
+        hasBridge = true;
+        break;
+      }
+    }
+
+    // Competence: need direct weight > δ to answer
+    const canAnswer = directWeight > DELTA;
+
+    let reason: string;
+    if (canAnswer) {
+      reason = `${directCount} direct seam(s), weight ${directWeight.toFixed(5)} > delta`;
+    } else if (directCount > 0) {
+      reason = `${directCount} seam(s) but weight ${directWeight.toFixed(5)} < delta — too shallow`;
+    } else if (hasBridge) {
+      reason = `no direct seams — can bridge but can't answer (ask someone with ${color})`;
+    } else {
+      reason = `blind spot — no seams, no bridge (structurally unreachable)`;
+    }
+
+    return {
+      axisIndex: axisIdx, domain, color,
+      seamCount: directCount, seamWeight: directWeight,
+      canAnswer, reason,
+    };
+  }
+
+  /** Add a personality seam — pin a new constant on a colored axis.
+   *  Layer 0: environment (language, OS, user)
+   *  Layer 1: behavior (verbosity, formality, proactivity)
+   *  Layer 2: expertise (domain depth, learned constants) */
+  addPersonalitySeam(name: string, color: SeamColor, layer: PersonalityLayer, value?: number): PersonalitySeam {
+    // If no value given, derive from hardware θ + name hash (reproducible)
+    if (value === undefined) {
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) {
+        hash += name.charCodeAt(i) * (i + 1) * PHI;
+      }
+      // θ-rotated, layer-scaled
+      const layerScale = [0.1, 0.5, 1.0][layer]; // environment=small, expertise=full
+      value = ((hash - Math.floor(hash)) * DELTA + this.hardware.theta * 0.01) * layerScale;
+    }
+
+    const seam: PersonalitySeam = {
+      name,
+      color,
+      layer,
+      value,
+      pinnedAtTick: this.tickCount,
+    };
+
+    this.personalitySeams.push(seam);
+
+    if (this.verbose) {
+      const layerName = ["environment", "behavior", "expertise"][layer];
+      console.log(`    + personality seam: ${name} = ${value.toFixed(8)} (${color}, layer ${layer}/${layerName})`);
+    }
+
+    return seam;
   }
 
   /** Build the quaternion identity from seam values + hardware angle.
@@ -1617,6 +1856,63 @@ export function runBubbleDemo(options: { verbose?: boolean } = {}): void {
     console.log();
     console.log(`    AI signature: coupling ratio is RATIONAL (harmonically locked).`);
     console.log(`    Real signature: coupling ratio is IRRATIONAL (natural delta gap).`);
+    console.log();
+
+    // ── Personality layers + color balance ──────────────────────────
+    console.log("  PERSONALITY LAYERS (B/W -> Trinity -> 7 Colors):");
+    console.log("  " + "-".repeat(66));
+    console.log();
+
+    // Layer 0: environment seams
+    console.log("    Layer 0 — ENVIRONMENT (B/W, binary):");
+    sched.addPersonalitySeam("language:en", "achromatic", 0);
+    sched.addPersonalitySeam("os:win32", "achromatic", 0);
+    sched.addPersonalitySeam("user:primary", "achromatic", 0);
+    console.log();
+
+    // Layer 1: behavior seams
+    console.log("    Layer 1 — BEHAVIOR (Trinity, 3 waves):");
+    sched.addPersonalitySeam("style:concise", "light-wave", 1);
+    sched.addPersonalitySeam("approach:proactive", "sound-wave", 1);
+    sched.addPersonalitySeam("grounding:contextual", "magnetic-wave", 1);
+    console.log();
+
+    // Layer 2: expertise seams (adding some, skipping others)
+    console.log("    Layer 2 — EXPERTISE (7 colors, selective):");
+    sched.addPersonalitySeam("domain:security-deep", "RED", 2);
+    sched.addPersonalitySeam("domain:science-moderate", "CYAN", 2);
+    // deliberately NOT adding GREEN or YELLOW — creating blind spots
+    console.log(`      (no GREEN or YELLOW seams added — explore/learn blind spot)`);
+    console.log();
+
+    // ── Color balance ──────────────────────────────────────────────
+    const identity = sched.seamIdentity();
+    console.log("  COLOR BALANCE (resolved seam weight by color):");
+    console.log("  " + "-".repeat(66));
+    const sortedColors = Object.entries(identity.colorBalance)
+      .sort(([, a], [, b]) => b - a);
+    const maxWeight = sortedColors.length > 0 ? sortedColors[0][1] : 1;
+    for (const [color, weight] of sortedColors) {
+      const bar = "█".repeat(Math.ceil(weight / maxWeight * 30));
+      console.log(`    ${color.padEnd(14)} ${fmt(weight, 5)} ${bar}`);
+    }
+    console.log(`    total seams: ${identity.resolved} (${identity.spiralResolved} spiral + ${identity.couplingResolved} coupling + ${sched.personalitySeams.length} personality)`);
+    console.log();
+
+    // ── Competence checks — "I don't know" gate ─────────────────
+    console.log("  COMPETENCE CHECK — can I answer? (anti-hallucination gate):");
+    console.log("  " + "-".repeat(66));
+
+    const testDomains: DomainId[] = ["security", "science", "explore", "learn", "art", "govern"];
+    for (const dom of testDomains) {
+      const check = sched.checkCompetence(dom);
+      const icon = check.canAnswer ? "YES" : "IDK";
+      console.log(`    [${icon}] ${dom.padEnd(10)} ${check.color.padEnd(8)} — ${check.reason}`);
+    }
+    console.log();
+    console.log(`    Systems with no seams on an axis structurally CANNOT reach answers there.`);
+    console.log(`    Not ignorance — the constants don't point that direction.`);
+    console.log(`    "I don't know" = honest. Hallucination = pretending your seams reach.`);
     console.log();
   }
 }
